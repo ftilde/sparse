@@ -1,0 +1,27 @@
+[package]
+name = "matrix-test"
+version = "0.1.0"
+authors = ["ftilde <ftilde@tamepointer.de>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+tokio = { version = "1.6.0", features = ["full", "rt-multi-thread"] }
+url = "2.2.0"
+dirs = "*"
+tracing-subscriber = "0.2.8"
+serde = "1.0"
+serde_json = "1.0"
+rpassword = "5.0"
+unsegen = "0.3"
+termion = "1.0"
+nix = "0.17"
+backtrace = "0.3"
+
+[dependencies.matrix-sdk]
+git = "https://github.com/matrix-org/matrix-rust-sdk"
+rev = "ee40d917d1f20230de3ad368df7fda17cda66deb"
+#default-features = false
+#features = ["encryption", "sled_cryptostore", "require_auth_for_profile_requests", "native-tls", "sled_state_store"]
