@@ -537,8 +537,23 @@ async fn main() -> Result<(), matrix_sdk::Error> {
     );
 
     ::std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+        use std::os::unix::io::FromRawFd;
+        // We open another instance of stdout here because the std::io::stdout is behind a lock
+        // which is held by the tui thread. The output may be a bit garbled, but it's better than
+        // not printing anything at all. We may find a better solution at some point...
+
+        // Safety: stdout is always present
+        let mut stdout = unsafe { std::fs::File::from_raw_fd(STDOUT) };
+
         // Switch back to main screen
-        println!("{}{}", termion::screen::ToMainScreen, termion::cursor::Show);
+        writeln!(
+            stdout,
+            "{}{}",
+            termion::screen::ToMainScreen,
+            termion::cursor::Show
+        )
+        .unwrap();
         // Restore old terminal behavior (will be restored later automatically, but we want to be
         // able to properly print the panic info)
         let _ = nix::sys::termios::tcsetattr(
@@ -547,9 +562,13 @@ async fn main() -> Result<(), matrix_sdk::Error> {
             &orig_attr.lock().unwrap(),
         );
 
-        println!("Oh no! sparse crashed!");
-        println!("{}", info);
-        println!("{:?}", backtrace::Backtrace::new());
+        writeln!(
+            stdout,
+            "Oh no! sparse crashed!\n{}\n{:?}",
+            info,
+            backtrace::Backtrace::new()
+        )
+        .unwrap();
     }));
 
     let host = Url::parse(&homeserver_url).expect("Couldn't parse the homeserver URL");
@@ -566,27 +585,13 @@ async fn main() -> Result<(), matrix_sdk::Error> {
         events: Arc::new(Mutex::new(event_sender.clone())),
     };
     let connection_events = connection_tasks.clone();
-    let task_loop =
+    let _task_loop =
         tokio::spawn(async { run_matrix_task_loop(connection_tasks, task_receiver).await });
-    let event_loop = tokio::spawn(async { run_matrix_event_loop(connection_events).await });
+    let _event_loop = tokio::spawn(async { run_matrix_event_loop(connection_events).await });
     //tokio::spawn(async { tui::run_keyboard_loop(sender) });
     tui::start_keyboard_thread(event_sender);
 
-    let local = tokio::task::LocalSet::new();
-
-    local
-        .run_until(async move {
-            let tui_loop = tokio::task::spawn_local(async {
-                tui::run_tui(event_receiver, task_sender, state).await
-            });
-            //TODO: detect if task_loop/event_loop are canceled and stop tui loop first, then print panic somehow.  maybe join in select with timeout or something?
-            let _ = tokio::select!(
-                _ = task_loop => {},
-                _ = event_loop => {},
-                _ = tui_loop => {},
-            );
-        })
-        .await;
+    tui::run_tui(event_receiver, task_sender, state).await;
 
     // TODO: log out?
     Ok(())
