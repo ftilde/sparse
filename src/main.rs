@@ -19,11 +19,12 @@ use matrix_sdk::{
             //redaction::SyncRedactionEvent,
             //tombstone::TombstoneEventContent,
         },
-        AnyMessageEvent, AnyMessageEventContent, AnyRoomEvent, SyncMessageEvent, SyncStateEvent,
+        AnyMessageEvent, AnyMessageEventContent, AnyRoomEvent, AnySyncMessageEvent,
+        AnySyncRoomEvent, SyncMessageEvent, SyncStateEvent,
     },
     identifiers::RoomId,
     room::Room,
-    Client, ClientConfig, EventHandler, MilliSecondsSinceUnixEpoch, Session, SyncSettings,
+    Client, ClientConfig, EventHandler, LoopCtrl, Session, SyncSettings,
 };
 
 use std::collections::BTreeMap;
@@ -34,9 +35,202 @@ use url::Url;
 
 type Msg = SyncMessageEvent<MessageEventContent>;
 
+type RoomMessageChunkToken = String;
+
+enum Previous {
+    Known(usize),
+    Unknown(RoomMessageChunkToken),
+    None,
+}
+
+enum Next {
+    Known(usize),
+    Unknown(RoomMessageChunkToken),
+}
+
+struct RoomMessageChunk {
+    previous: Previous,
+    next: Next,
+    messages: Vec<Msg>,
+}
+
+#[derive(Default)]
+struct RoomMessages {
+    chunks: Vec<RoomMessageChunk>,
+    start: BTreeMap<RoomMessageChunkToken, usize>,
+    end: BTreeMap<RoomMessageChunkToken, usize>,
+    newest_chunk: usize,
+}
+
+#[derive(Copy, Clone)]
+pub struct MessageID {
+    chunk: usize,
+    msg: usize,
+}
+
+pub enum MsgWalkResult {
+    Msg(MessageID),
+    End,
+    RequiresFetch(RoomMessageChunkToken),
+}
+
+impl RoomMessages {
+    fn newest_message(&self) -> Option<MessageID> {
+        if self.chunks.is_empty() {
+            None
+        } else {
+            let chunk = self.newest_chunk;
+            Some(MessageID {
+                chunk,
+                msg: self.chunks[chunk].messages.len() - 1,
+            })
+        }
+    }
+
+    fn message(&self, id: MessageID) -> &Msg {
+        &self.chunks[id.chunk].messages[id.msg]
+    }
+
+    fn next(&self, id: MessageID) -> MsgWalkResult {
+        let chunk = &self.chunks[id.chunk];
+        if id.msg + 1 < chunk.messages.len() {
+            return MsgWalkResult::Msg(MessageID {
+                chunk: id.chunk,
+                msg: id.msg + 1,
+            });
+        }
+
+        match &chunk.next {
+            Next::Known(chunk_id) => MsgWalkResult::Msg(MessageID {
+                chunk: *chunk_id,
+                msg: 0,
+            }),
+            Next::Unknown(token) => {
+                if id.chunk == self.newest_chunk {
+                    MsgWalkResult::RequiresFetch(token.clone())
+                } else {
+                    MsgWalkResult::End
+                }
+            }
+        }
+    }
+
+    fn previous(&self, id: MessageID) -> MsgWalkResult {
+        let chunk = &self.chunks[id.chunk];
+        if id.msg > 0 {
+            return MsgWalkResult::Msg(MessageID {
+                chunk: id.chunk,
+                msg: id.msg - 1,
+            });
+        }
+
+        match &chunk.previous {
+            Previous::Known(chunk_id) => MsgWalkResult::Msg(MessageID {
+                chunk: *chunk_id,
+                msg: self.chunks[*chunk_id].messages.len() - 1,
+            }),
+            Previous::Unknown(token) => MsgWalkResult::RequiresFetch(token.clone()),
+            Previous::None => MsgWalkResult::End,
+        }
+    }
+
+    fn add_chunk(
+        &mut self,
+        messages: Vec<Msg>,
+        before_token: Option<RoomMessageChunkToken>,
+        after_token: RoomMessageChunkToken,
+    ) {
+        assert!(!messages.is_empty(), "Tried to add empty message chunk");
+
+        let this_id = self.chunks.len();
+
+        let next = if let Some(i) = self.start.get(&after_token) {
+            self.chunks[*i].previous = Previous::Known(this_id);
+            Next::Known(*i)
+        } else {
+            Next::Unknown(after_token.clone())
+        };
+
+        let previous = if let Some(t) = before_token.clone() {
+            if let Some(i) = self.end.get(&t) {
+                self.chunks[*i].next = Next::Known(this_id);
+                if *i == self.newest_chunk {
+                    self.newest_chunk = this_id;
+                }
+                Previous::Known(*i)
+            } else {
+                Previous::Unknown(t)
+            }
+        } else {
+            Previous::None
+        };
+
+        if let Some(b) = before_token {
+            let prev = self.start.insert(b, this_id);
+            assert!(prev.is_none());
+        }
+        let prev = self.end.insert(after_token, this_id);
+        assert!(prev.is_none());
+
+        self.chunks.push(RoomMessageChunk {
+            messages,
+            previous,
+            next,
+        });
+    }
+}
+
 pub struct State {
-    messages: BTreeMap<RoomId, BTreeMap<MilliSecondsSinceUnixEpoch, Msg>>,
+    messages: BTreeMap<RoomId, RoomMessages>,
     rooms: BTreeMap<RoomId, String>,
+}
+
+async fn run_matrix_event_loop(connection: Connection) {
+    // since we called `sync_once` before we entered our sync loop we must pass
+    // that sync token to `sync`
+    let settings = SyncSettings::default();
+    // this keeps state from the server streaming in to Connection via the
+    // EventHandler trait
+    //client.sync(settings).await;
+    connection
+        .client
+        .sync_with_callback(
+            settings,
+            |r: matrix_sdk::deserialized_responses::SyncResponse| async {
+                eprint!("Sync!");
+                for (rid, room) in r.rooms.join {
+                    let mut msgs = Vec::new();
+                    for msg in room.timeline.events {
+                        match msg.event.deserialize() {
+                            Ok(AnySyncRoomEvent::Message(AnySyncMessageEvent::RoomMessage(e))) => {
+                                msgs.push(e);
+                            }
+                            Ok(o) => {
+                                tracing::warn!("Unexpected event in get_messages call {:?}", o)
+                            }
+                            Err(e) => tracing::warn!("Failed to deserialize message {:?}", e),
+                        }
+                    }
+
+                    eprint!("Sync2!");
+                    let mut state = connection.state.lock().await;
+                    eprint!("Sync3!");
+                    let room_messages = state.messages.entry(rid).or_default();
+
+                    let after_token = r.next_batch.clone();
+                    let before_token = room.timeline.prev_batch;
+
+                    if !msgs.is_empty() {
+                        room_messages.add_chunk(msgs, before_token, after_token);
+                    }
+                }
+                eprint!("Sync4!");
+                connection.update().await;
+
+                LoopCtrl::Continue
+            },
+        )
+        .await;
 }
 
 #[derive(Clone)]
@@ -76,24 +270,25 @@ impl Connection {
             Room::Invited(_) => { /*TODO*/ }
         }
     }
-    async fn add_room_message(&self, room: &Room, event: &SyncMessageEvent<MessageEventContent>) {
-        eprintln!("got message: {:?}", event);
-        if let Room::Joined(room) = room {
-            {
-                let mut state = self.state.lock().await;
-                let room_messages = state.messages.entry(room.room_id().clone()).or_default();
-                room_messages.insert(event.origin_server_ts, event.clone());
-            }
-        }
-    }
+    //async fn add_room_message(&self, room: &Room, event: &SyncMessageEvent<MessageEventContent>) {
+    //    eprintln!("got message: {:?}", event);
+    //    if let Room::Joined(room) = room {
+    //        {
+    //            let mut state = self.state.lock().await;
+    //            let room_messages = state.messages.entry(room.room_id().clone()).or_default();
+    //            room_messages.insert(event.origin_server_ts, event.clone());
+    //        }
+    //    }
+    //}
 }
 
 #[async_trait]
 impl EventHandler for Connection {
-    async fn on_room_message(&self, room: Room, event: &SyncMessageEvent<MessageEventContent>) {
-        self.add_room_message(&room, event).await;
-        self.update().await;
-    }
+    // Handled in batches
+    //async fn on_room_message(&self, room: Room, event: &SyncMessageEvent<MessageEventContent>) {
+    //    //self.add_room_message(&room, event).await;
+    //    self.update().await;
+    //}
     async fn on_room_member(&self, room: Room, _: &SyncStateEvent<MemberEventContent>) {
         self.update_room_info(room).await
     }
@@ -258,20 +453,6 @@ async fn login(
     Ok((client, state))
 }
 
-async fn run_matrix_event_loop(client: Client) {
-    // since we called `sync_once` before we entered our sync loop we must pass
-    // that sync token to `sync`
-    let settings = SyncSettings::default();
-    // this keeps state from the server streaming in to Connection via the
-    // EventHandler trait
-    client.sync(settings).await;
-    //.sync_with_callback(settings, |_| async {
-    //    //eprint!("Sync!");
-    //    LoopCtrl::Continue
-    //})
-    //.await;
-}
-
 async fn run_matrix_task_loop(c: Connection, mut tasks: Receiver<tui::Task>) {
     while let Some(task) = tasks.recv().await {
         match task {
@@ -284,29 +465,46 @@ async fn run_matrix_task_loop(c: Connection, mut tasks: Receiver<tui::Task>) {
                     panic!("can't send message, no joined room"); //TODO: we probably want to log something
                 }
             }
-            tui::Task::MoreMessages(rid) => {
+            tui::Task::MoreMessages(rid, query) => {
                 eprintln!("Trying to get messages...");
                 let room = c.client.get_room(&rid).unwrap();
-
-                //TODO: actually only use this if token is not present in task
-                let token = room.last_prev_batch().unwrap();
-
-                //TODO: insert these with the token they came from insert sync messages with last_prev_batch token
-                //TODO: is it actually fine to store messages with timestamp as key?! probably not since multiple messages may have the same timestamp!!
                 let messages = room
-                    .messages(MessageRequest::backward(&rid, &token))
+                    .messages(match &query {
+                        tui::MessageQuery::After(tok) => MessageRequest::forward(&rid, tok),
+                        tui::MessageQuery::Before(tok) => MessageRequest::backward(&rid, tok),
+                    })
                     .await
                     .unwrap();
+                let mut msgs = Vec::new();
                 for msg in messages.chunk {
                     match msg.deserialize() {
                         Ok(AnyRoomEvent::Message(AnyMessageEvent::RoomMessage(e))) => {
                             let msg: SyncMessageEvent<_> = e.into();
-                            c.add_room_message(&room, &msg).await;
+                            msgs.push(msg);
                         }
-                        Ok(o) => eprintln!("Unexpected event in get_messages call {:?}", o),
-                        Err(e) => eprintln!("Failed to deserialize message {:?}", e),
+                        Ok(o) => tracing::warn!("Unexpected event in get_messages call {:?}", o),
+                        Err(e) => tracing::warn!("Failed to deserialize message {:?}", e),
                     }
                 }
+
+                {
+                    let mut state = c.state.lock().await;
+                    let room_messages = state.messages.entry(rid).or_default();
+
+                    let (msgs, before_token, after_token) = match query {
+                        tui::MessageQuery::After(_tok) => {
+                            (msgs, messages.start, messages.end.unwrap())
+                        }
+                        tui::MessageQuery::Before(_tok) => (
+                            msgs.into_iter().rev().collect(),
+                            messages.end,
+                            messages.start.unwrap(),
+                        ),
+                    };
+
+                    room_messages.add_chunk(msgs, before_token, after_token);
+                }
+
                 c.update().await;
             }
         }
@@ -362,17 +560,34 @@ async fn main() -> Result<(), matrix_sdk::Error> {
     let (task_sender, task_receiver) = channel(5);
     let (client, state) = login(event_sender.clone(), config).await?;
 
-    let connection = Connection {
+    let connection_tasks = Connection {
         client: client.clone(),
         state: state.clone(),
         events: Arc::new(Mutex::new(event_sender.clone())),
     };
-    tokio::spawn(async { run_matrix_task_loop(connection, task_receiver).await });
-    let event_client = client.clone();
-    tokio::spawn(async { run_matrix_event_loop(event_client).await });
+    let connection_events = connection_tasks.clone();
+    let task_loop =
+        tokio::spawn(async { run_matrix_task_loop(connection_tasks, task_receiver).await });
+    let event_loop = tokio::spawn(async { run_matrix_event_loop(connection_events).await });
     //tokio::spawn(async { tui::run_keyboard_loop(sender) });
     tui::start_keyboard_thread(event_sender);
-    tui::run_tui(event_receiver, task_sender, state).await;
+
+    let local = tokio::task::LocalSet::new();
+
+    local
+        .run_until(async move {
+            let tui_loop = tokio::task::spawn_local(async {
+                tui::run_tui(event_receiver, task_sender, state).await
+            });
+            //TODO: detect if task_loop/event_loop are canceled and stop tui loop first, then print panic somehow.  maybe join in select with timeout or something?
+            let _ = tokio::select!(
+                _ = task_loop => {},
+                _ = event_loop => {},
+                _ = tui_loop => {},
+            );
+        })
+        .await;
+
     // TODO: log out?
     Ok(())
 }
