@@ -29,9 +29,9 @@ nix = "0.17"
 backtrace = "0.3"
 
 [dependencies.matrix-sdk]
-git = "https://github.com/matrix-org/matrix-rust-sdk"
-rev = "ee40d917d1f20230de3ad368df7fda17cda66deb"
-#git = "https://github.com/jsparber/matrix-rust-sdk"
-#rev = "de04124c7f1b309a3c12dcb77367f7688223d3fa"
+#git = "https://github.com/matrix-org/matrix-rust-sdk"
+#rev = "ee40d917d1f20230de3ad368df7fda17cda66deb"
+git = "https://github.com/jsparber/matrix-rust-sdk"
+rev = "a92e2d1104b8ec37581ee704fbbfcd4c1f8e4af3"
 #default-features = false
 #features = ["encryption", "sled_cryptostore", "require_auth_for_profile_requests", "native-tls", "sled_state_store"]

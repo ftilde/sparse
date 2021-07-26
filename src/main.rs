@@ -2,10 +2,11 @@ use std::{env, process::exit};
 
 mod tui;
 
-use matrix_sdk::api::r0::message::get_message_events::Request as MessageRequest;
 use matrix_sdk::{
     self, async_trait,
-    events::{
+    deserialized_responses::SyncRoomEvent,
+    room::Room,
+    ruma::events::{
         room::message::MessageEventContent,
         room::{
             aliases::AliasesEventContent,
@@ -19,15 +20,14 @@ use matrix_sdk::{
             //redaction::SyncRedactionEvent,
             //tombstone::TombstoneEventContent,
         },
-        AnyMessageEvent, AnyMessageEventContent, AnyRoomEvent, AnySyncMessageEvent,
-        AnySyncRoomEvent, SyncMessageEvent, SyncStateEvent,
+        AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent, SyncMessageEvent,
+        SyncStateEvent,
     },
-    identifiers::RoomId,
-    room::Room,
-    Client, ClientConfig, EventHandler, LoopCtrl, Session, SyncSettings,
+    ruma::identifiers::{EventId, RoomId},
+    Client, ClientConfig, EventHandler, Session, SyncSettings,
 };
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
@@ -35,153 +35,140 @@ use url::Url;
 
 type Msg = SyncMessageEvent<MessageEventContent>;
 
-type RoomMessageChunkToken = String;
-
-enum Previous {
-    Known(usize),
-    Unknown(RoomMessageChunkToken),
-    None,
+enum CacheEndState {
+    Open,
+    Reached,
 }
 
-enum Next {
-    Known(usize),
-    Unknown(RoomMessageChunkToken),
+struct RoomMessageCache {
+    messages: VecDeque<Msg>,
+    begin: CacheEndState,
+    end: CacheEndState,
 }
 
-struct RoomMessageChunk {
-    previous: Previous,
-    next: Next,
-    messages: Vec<Msg>,
+impl std::default::Default for RoomMessageCache {
+    fn default() -> Self {
+        RoomMessageCache {
+            messages: VecDeque::new(),
+            begin: CacheEndState::Open,
+            end: CacheEndState::Open,
+        }
+    }
 }
 
-#[derive(Default)]
-struct RoomMessages {
-    chunks: Vec<RoomMessageChunk>,
-    start: BTreeMap<RoomMessageChunkToken, usize>,
-    end: BTreeMap<RoomMessageChunkToken, usize>,
-    newest_chunk: usize,
-}
-
-#[derive(Copy, Clone)]
-pub struct MessageID {
-    chunk: usize,
-    msg: usize,
-}
-
-pub enum MsgWalkResult {
-    Msg(MessageID),
+#[derive(Debug)]
+enum MsgWalkResult<'a> {
+    Message(RoomMessageIndex<'a>),
+    RequiresFetchFrom(EventId),
     End,
-    RequiresFetch(RoomMessageChunkToken),
 }
 
-impl RoomMessages {
-    fn newest_message(&self) -> Option<MessageID> {
-        if self.chunks.is_empty() {
-            None
+#[derive(Debug)]
+enum MsgWalkResultNewest<'a> {
+    Message(RoomMessageIndex<'a>),
+    RequiresFetch,
+    End,
+}
+
+#[derive(Copy, Clone, Debug)]
+struct RoomMessageIndex<'a> {
+    pos: usize,
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl RoomMessageIndex<'_> {
+    fn new(pos: usize) -> Self {
+        RoomMessageIndex {
+            pos,
+            _marker: std::marker::PhantomData::default(),
+        }
+    }
+}
+
+impl RoomMessageCache {
+    fn begin(&self) -> Option<&EventId> {
+        self.messages.front().map(|m| &m.event_id)
+    }
+    fn end(&self) -> Option<&EventId> {
+        self.messages.back().map(|m| &m.event_id)
+    }
+
+    fn clear(&mut self) {
+        self.messages.clear();
+    }
+
+    fn append(&mut self, msg: Msg) {
+        self.messages.push_back(msg)
+    }
+    fn prepend(&mut self, msg: Msg) {
+        self.messages.push_front(msg)
+    }
+
+    fn message(&self, id: RoomMessageIndex) -> &Msg {
+        &self.messages[id.pos]
+    }
+
+    fn walk_from_known(&self, id: &EventId) -> MsgWalkResult {
+        if let Some((i, _)) = self
+            .messages
+            .iter()
+            .enumerate()
+            .find(|(_, m)| m.event_id == *id)
+        {
+            MsgWalkResult::Message(RoomMessageIndex::new(i))
         } else {
-            let chunk = self.newest_chunk;
-            Some(MessageID {
-                chunk,
-                msg: self.chunks[chunk].messages.len() - 1,
-            })
+            MsgWalkResult::RequiresFetchFrom(id.clone())
         }
     }
 
-    fn message(&self, id: MessageID) -> &Msg {
-        &self.chunks[id.chunk].messages[id.msg]
-    }
-
-    fn next(&self, id: MessageID) -> MsgWalkResult {
-        let chunk = &self.chunks[id.chunk];
-        if id.msg + 1 < chunk.messages.len() {
-            return MsgWalkResult::Msg(MessageID {
-                chunk: id.chunk,
-                msg: id.msg + 1,
-            });
-        }
-
-        match &chunk.next {
-            Next::Known(chunk_id) => MsgWalkResult::Msg(MessageID {
-                chunk: *chunk_id,
-                msg: 0,
-            }),
-            Next::Unknown(token) => {
-                if id.chunk == self.newest_chunk {
-                    MsgWalkResult::RequiresFetch(token.clone())
+    fn walk_from_newest(&self) -> MsgWalkResultNewest {
+        match self.end {
+            CacheEndState::Reached => {
+                if !self.messages.is_empty() {
+                    MsgWalkResultNewest::Message(RoomMessageIndex::new(self.messages.len() - 1))
                 } else {
-                    MsgWalkResult::End
+                    MsgWalkResultNewest::End
+                }
+            }
+            CacheEndState::Open => MsgWalkResultNewest::RequiresFetch,
+        }
+    }
+
+    fn next<'a>(&'a self, pos: RoomMessageIndex<'a>) -> MsgWalkResult<'a> {
+        let new_pos = pos.pos + 1;
+        if new_pos < self.messages.len() {
+            MsgWalkResult::Message(RoomMessageIndex::new(new_pos))
+        } else {
+            match self.end {
+                CacheEndState::Reached => MsgWalkResult::End,
+                CacheEndState::Open => {
+                    let id = self
+                        .end()
+                        .expect("Since we have pos, messages cannot be empty");
+                    MsgWalkResult::RequiresFetchFrom(id.clone())
                 }
             }
         }
     }
-
-    fn previous(&self, id: MessageID) -> MsgWalkResult {
-        let chunk = &self.chunks[id.chunk];
-        if id.msg > 0 {
-            return MsgWalkResult::Msg(MessageID {
-                chunk: id.chunk,
-                msg: id.msg - 1,
-            });
-        }
-
-        match &chunk.previous {
-            Previous::Known(chunk_id) => MsgWalkResult::Msg(MessageID {
-                chunk: *chunk_id,
-                msg: self.chunks[*chunk_id].messages.len() - 1,
-            }),
-            Previous::Unknown(token) => MsgWalkResult::RequiresFetch(token.clone()),
-            Previous::None => MsgWalkResult::End,
-        }
-    }
-
-    fn add_chunk(
-        &mut self,
-        messages: Vec<Msg>,
-        before_token: Option<RoomMessageChunkToken>,
-        after_token: RoomMessageChunkToken,
-    ) {
-        assert!(!messages.is_empty(), "Tried to add empty message chunk");
-
-        let this_id = self.chunks.len();
-
-        let next = if let Some(i) = self.start.get(&after_token) {
-            self.chunks[*i].previous = Previous::Known(this_id);
-            Next::Known(*i)
+    fn previous<'a>(&'a self, pos: RoomMessageIndex<'a>) -> MsgWalkResult<'a> {
+        if pos.pos > 0 {
+            MsgWalkResult::Message(RoomMessageIndex::new(pos.pos - 1))
         } else {
-            Next::Unknown(after_token.clone())
-        };
-
-        let previous = if let Some(t) = before_token.clone() {
-            if let Some(i) = self.end.get(&t) {
-                self.chunks[*i].next = Next::Known(this_id);
-                if *i == self.newest_chunk {
-                    self.newest_chunk = this_id;
+            match self.begin {
+                CacheEndState::Reached => MsgWalkResult::End,
+                CacheEndState::Open => {
+                    let id = self
+                        .begin()
+                        .expect("Since we have pos, messages cannot be empty");
+                    MsgWalkResult::RequiresFetchFrom(id.clone())
                 }
-                Previous::Known(*i)
-            } else {
-                Previous::Unknown(t)
             }
-        } else {
-            Previous::None
-        };
-
-        if let Some(b) = before_token {
-            let prev = self.start.insert(b, this_id);
-            assert!(prev.is_none());
         }
-        let prev = self.end.insert(after_token, this_id);
-        assert!(prev.is_none());
-
-        self.chunks.push(RoomMessageChunk {
-            messages,
-            previous,
-            next,
-        });
     }
 }
 
 pub struct State {
-    messages: BTreeMap<RoomId, RoomMessages>,
+    messages: BTreeMap<RoomId, RoomMessageCache>,
     rooms: BTreeMap<RoomId, String>,
 }
 
@@ -191,46 +178,7 @@ async fn run_matrix_event_loop(connection: Connection) {
     let settings = SyncSettings::default();
     // this keeps state from the server streaming in to Connection via the
     // EventHandler trait
-    //client.sync(settings).await;
-    connection
-        .client
-        .sync_with_callback(
-            settings,
-            |r: matrix_sdk::deserialized_responses::SyncResponse| async {
-                eprint!("Sync!");
-                for (rid, room) in r.rooms.join {
-                    let mut msgs = Vec::new();
-                    for msg in room.timeline.events {
-                        match msg.event.deserialize() {
-                            Ok(AnySyncRoomEvent::Message(AnySyncMessageEvent::RoomMessage(e))) => {
-                                msgs.push(e);
-                            }
-                            Ok(o) => {
-                                tracing::warn!("Unexpected event in get_messages call {:?}", o)
-                            }
-                            Err(e) => tracing::warn!("Failed to deserialize message {:?}", e),
-                        }
-                    }
-
-                    eprint!("Sync2!");
-                    let mut state = connection.state.lock().await;
-                    eprint!("Sync3!");
-                    let room_messages = state.messages.entry(rid).or_default();
-
-                    let after_token = r.next_batch.clone();
-                    let before_token = room.timeline.prev_batch;
-
-                    if !msgs.is_empty() {
-                        room_messages.add_chunk(msgs, before_token, after_token);
-                    }
-                }
-                eprint!("Sync4!");
-                connection.update().await;
-
-                LoopCtrl::Continue
-            },
-        )
-        .await;
+    connection.client.sync(settings).await;
 }
 
 #[derive(Clone)]
@@ -270,25 +218,18 @@ impl Connection {
             Room::Invited(_) => { /*TODO*/ }
         }
     }
-    //async fn add_room_message(&self, room: &Room, event: &SyncMessageEvent<MessageEventContent>) {
-    //    eprintln!("got message: {:?}", event);
-    //    if let Room::Joined(room) = room {
-    //        {
-    //            let mut state = self.state.lock().await;
-    //            let room_messages = state.messages.entry(room.room_id().clone()).or_default();
-    //            room_messages.insert(event.origin_server_ts, event.clone());
-    //        }
-    //    }
-    //}
 }
 
 #[async_trait]
 impl EventHandler for Connection {
     // Handled in batches
-    //async fn on_room_message(&self, room: Room, event: &SyncMessageEvent<MessageEventContent>) {
-    //    //self.add_room_message(&room, event).await;
-    //    self.update().await;
-    //}
+    async fn on_room_message(&self, room: Room, _event: &SyncMessageEvent<MessageEventContent>) {
+        //self.add_room_message(&room, event).await;
+        let mut state = self.state.lock().await;
+        let m = state.messages.entry(room.room_id().clone()).or_default();
+        m.end = CacheEndState::Open;
+        self.update().await;
+    }
     async fn on_room_member(&self, room: Room, _: &SyncStateEvent<MemberEventContent>) {
         self.update_room_info(room).await
     }
@@ -401,8 +342,8 @@ async fn login(
                             break;
                         }
                         Err(matrix_sdk::Error::Http(matrix_sdk::HttpError::ClientApi(
-                            matrix_sdk::FromHttpResponseError::Http(
-                                matrix_sdk::ServerError::Known(r),
+                            matrix_sdk::ruma::api::error::FromHttpResponseError::Http(
+                                matrix_sdk::ruma::api::error::ServerError::Known(r),
                             ),
                         ))) => {
                             eprintln!("{}", r.message);
@@ -466,45 +407,96 @@ async fn run_matrix_task_loop(c: Connection, mut tasks: Receiver<tui::Task>) {
                 }
             }
             tui::Task::MoreMessages(rid, query) => {
-                eprintln!("Trying to get messages...");
                 let room = c.client.get_room(&rid).unwrap();
+                use matrix_sdk::ruma::api::client::r0::message::get_message_events::Direction;
+                let (direction, start, end) = {
+                    let mut state = c.state.lock().await;
+                    let m = state.messages.entry(rid.clone()).or_default();
+
+                    match &query {
+                        tui::MessageQuery::AfterCache => {
+                            (Direction::Forward, m.end().cloned(), None)
+                        }
+                        tui::MessageQuery::BeforeCache => {
+                            (Direction::Backward, m.begin().cloned(), None)
+                        }
+                        tui::MessageQuery::Newest => (Direction::Backward, None, m.end().cloned()),
+                    }
+                };
+
                 let messages = room
-                    .messages(match &query {
-                        tui::MessageQuery::After(tok) => MessageRequest::forward(&rid, tok),
-                        tui::MessageQuery::Before(tok) => MessageRequest::backward(&rid, tok),
-                    })
+                    .messages(start.as_ref(), end.as_ref(), 10, direction)
                     .await
                     .unwrap();
-                let mut msgs = Vec::new();
-                for msg in messages.chunk {
-                    match msg.deserialize() {
-                        Ok(AnyRoomEvent::Message(AnyMessageEvent::RoomMessage(e))) => {
+
+                let mut state = c.state.lock().await;
+                let m = state.messages.entry(rid).or_default();
+
+                fn transform_events(
+                    i: impl Iterator<Item = SyncRoomEvent>,
+                ) -> impl Iterator<Item = Msg> {
+                    i.filter_map(|msg| match msg.event.deserialize() {
+                        Ok(AnySyncRoomEvent::Message(AnySyncMessageEvent::RoomMessage(e))) => {
                             let msg: SyncMessageEvent<_> = e.into();
-                            msgs.push(msg);
+                            Some(msg)
                         }
-                        Ok(o) => tracing::warn!("Unexpected event in get_messages call {:?}", o),
-                        Err(e) => tracing::warn!("Failed to deserialize message {:?}", e),
+                        Ok(o) => {
+                            tracing::warn!("Unexpected event in get_messages call {:?}", o);
+                            None
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to deserialize message {:?}", e);
+                            None
+                        }
+                    })
+                }
+
+                if let Some(msgs) = messages {
+                    match &query {
+                        tui::MessageQuery::AfterCache => {
+                            for msg in transform_events(msgs.into_iter()) {
+                                m.append(msg);
+                            }
+                        }
+                        tui::MessageQuery::BeforeCache => {
+                            let mut iter = transform_events(msgs.into_iter());
+                            if let Some(e) = iter.next() {
+                                if m.begin() != Some(&e.event_id) {
+                                    m.clear();
+                                    m.prepend(e);
+                                }
+                            }
+                            for msg in iter {
+                                m.prepend(msg);
+                            }
+                        }
+                        tui::MessageQuery::Newest => {
+                            let mut iter = transform_events(msgs.into_iter().rev());
+                            if let Some(e) = iter.next() {
+                                if m.end() != Some(&e.event_id) {
+                                    m.clear();
+                                    m.append(e);
+                                }
+                            }
+                            for msg in iter {
+                                m.append(msg);
+                            }
+                            m.end = CacheEndState::Reached;
+                        }
+                    }
+                } else {
+                    match &query {
+                        tui::MessageQuery::AfterCache => {
+                            m.end = CacheEndState::Reached;
+                        }
+                        tui::MessageQuery::BeforeCache => {
+                            m.begin = CacheEndState::Reached;
+                        }
+                        tui::MessageQuery::Newest => {
+                            m.end = CacheEndState::Reached;
+                        }
                     }
                 }
-
-                {
-                    let mut state = c.state.lock().await;
-                    let room_messages = state.messages.entry(rid).or_default();
-
-                    let (msgs, before_token, after_token) = match query {
-                        tui::MessageQuery::After(_tok) => {
-                            (msgs, messages.start, messages.end.unwrap())
-                        }
-                        tui::MessageQuery::Before(_tok) => (
-                            msgs.into_iter().rev().collect(),
-                            messages.end,
-                            messages.start.unwrap(),
-                        ),
-                    };
-
-                    room_messages.add_chunk(msgs, before_token, after_token);
-                }
-
                 c.update().await;
             }
         }

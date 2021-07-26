@@ -12,10 +12,10 @@ use unsegen::input::{
 use unsegen::widget::builtin::*;
 use unsegen::widget::*;
 
-use matrix_sdk::events::room::message::MessageType;
-use matrix_sdk::identifiers::RoomId;
+use matrix_sdk::ruma::events::room::message::MessageType;
+use matrix_sdk::ruma::identifiers::{EventId, RoomId};
 
-use crate::{MsgWalkResult, State};
+use crate::{MsgWalkResult, MsgWalkResultNewest, State};
 
 struct Rooms<'a>(&'a State, &'a TuiState);
 
@@ -102,18 +102,30 @@ impl Widget for Messages<'_> {
         let mut c = Cursor::new(&mut window);
         c.move_to_y((height - 1).from_origin());
 
+        tracing::warn!("1");
         if let Some(room) = self.1.current_room.as_ref() {
+            tracing::warn!("2");
             if let Some(messages) = self.0.messages.get(&room.id) {
-                let msg = room.current_message.or(messages.newest_message());
-                let mut msg = if let Some(msg) = msg {
-                    MsgWalkResult::Msg(msg)
-                } else {
-                    MsgWalkResult::End
+                let mut msg = match &room.current_message {
+                    MessageSelection::Newest => match messages.walk_from_newest() {
+                        MsgWalkResultNewest::Message(m) => MsgWalkResult::Message(m),
+                        MsgWalkResultNewest::End => MsgWalkResult::End,
+                        MsgWalkResultNewest::RequiresFetch => {
+                            tracing::warn!("fetch newest");
+                            write!(&mut c, "[...]").unwrap();
+                            let mut m = self.2.borrow_mut();
+                            m.push(Task::MoreMessages(room.id.clone(), MessageQuery::Newest));
+                            MsgWalkResult::End
+                        }
+                    },
+                    MessageSelection::Specific(id) => messages.walk_from_known(&id),
                 };
 
+                tracing::warn!("start loop");
                 loop {
+                    tracing::warn!("msg={:?}", msg);
                     msg = match msg {
-                        MsgWalkResult::Msg(id) => {
+                        MsgWalkResult::Message(id) => {
                             let msg = messages.message(id);
                             let (_, row) = c.get_position();
                             if row < 0 {
@@ -121,7 +133,7 @@ impl Widget for Messages<'_> {
                             }
                             let text = match &msg.content.msgtype {
                                 MessageType::Text(text) => {
-                                    format!("{}: {}", msg.sender, text.body)
+                                    format!("{}: {:?}, {}", msg.sender, msg.event_id, text.body)
                                 }
                                 o => {
                                     format!("{}: Other message {:?}", msg.sender, o)
@@ -137,12 +149,12 @@ impl Widget for Messages<'_> {
                         MsgWalkResult::End => {
                             break;
                         }
-                        MsgWalkResult::RequiresFetch(tok) => {
+                        MsgWalkResult::RequiresFetchFrom(_tok) => {
                             write!(&mut c, "[...]").unwrap();
                             let mut m = self.2.borrow_mut();
                             m.push(Task::MoreMessages(
                                 room.id.clone(),
-                                MessageQuery::Before(tok),
+                                MessageQuery::BeforeCache,
                             ));
                             break;
                         }
@@ -156,21 +168,34 @@ impl Widget for Messages<'_> {
                 //};
                 //for (_ts, msg) in msgs {
                 //}
+            } else {
+                write!(&mut c, "[...]").unwrap();
+                let mut m = self.2.borrow_mut();
+                let query = match &room.current_message {
+                    MessageSelection::Newest => MessageQuery::Newest,
+                    MessageSelection::Specific(_id) => MessageQuery::BeforeCache,
+                };
+                m.push(Task::MoreMessages(room.id.clone(), query));
             }
         }
     }
 }
 
+enum MessageSelection {
+    Newest,
+    Specific(EventId),
+}
+
 struct RoomState {
     id: RoomId,
-    current_message: Option<crate::MessageID>,
+    current_message: MessageSelection,
 }
 
 impl RoomState {
     fn at_last_message(id: &RoomId) -> Self {
         RoomState {
             id: id.clone(),
-            current_message: None,
+            current_message: MessageSelection::Newest,
         }
     }
 }
@@ -205,8 +230,9 @@ pub enum Event {
 
 #[derive(Debug)]
 pub enum MessageQuery {
-    Before(crate::RoomMessageChunkToken),
-    After(crate::RoomMessageChunkToken),
+    BeforeCache,
+    AfterCache,
+    Newest,
 }
 
 #[derive(Debug)]
@@ -228,7 +254,7 @@ pub async fn run_tui(
         let current_room = if let Some(id) = state.rooms.keys().next() {
             Some(RoomState {
                 id: id.clone(),
-                current_message: None,
+                current_message: MessageSelection::Newest,
             })
         } else {
             None
@@ -240,15 +266,21 @@ pub async fn run_tui(
     };
 
     let mut run = true;
-    while run {
-        let mut tasks = RefCell::new(Vec::new());
 
+    let mut tasks = RefCell::new(Vec::new());
+    while run {
         {
             let state = state.lock().await;
             let win = term.create_root_window();
             tui(&state, &tui_state, &tasks).draw(win, RenderingHints::new().active(true));
         }
         term.present();
+
+        // TODO: somehow we need to make sure that this does not block. at the moment it still
+        // might do so because the channel has 5 elements.
+        for t in tasks.get_mut().drain(..) {
+            task_sink.send(t).await.unwrap();
+        }
 
         match events.recv().await.unwrap() {
             Event::Update => {}
@@ -268,20 +300,14 @@ pub async fn run_tui(
                     )
                     .chain((Key::Char('\n'), || {
                         if let Some(room) = &tui_state.current_room {
-                            tasks.get_mut().push(Task::Send(
-                                room.id.clone(),
-                                tui_state.msg_edit.get().to_owned(),
-                            ));
-                            tui_state.msg_edit.clear().unwrap();
+                            let msg = tui_state.msg_edit.get().to_owned();
+                            if !msg.is_empty() {
+                                tasks.get_mut().push(Task::Send(room.id.clone(), msg));
+                                tui_state.msg_edit.clear().unwrap();
+                            }
                         }
                     }));
             }
-        }
-
-        // TODO: somehow we need to make sure that this does not block. at the moment it still
-        // might do so because the channel has 5 elements.
-        for t in tasks.into_inner() {
-            task_sink.send(t).await.unwrap();
         }
     }
 }
