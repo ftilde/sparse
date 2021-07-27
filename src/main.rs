@@ -14,7 +14,7 @@ use matrix_sdk::{
             canonical_alias::CanonicalAliasEventContent,
             //join_rules::JoinRulesEventContent,
             member::MemberEventContent,
-            //message::{feedback::FeedbackEventContent, MessageEventContent as MsgEventContent},
+            //message::{feedback::FeedbackEventContent, MessageEventContent as EventEventContent},
             name::NameEventContent,
             //power_levels::PowerLevelsEventContent,
             //redaction::SyncRedactionEvent,
@@ -33,22 +33,22 @@ use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use url::Url;
 
-type Msg = SyncMessageEvent<MessageEventContent>;
+type Event = AnySyncMessageEvent;
 
 enum CacheEndState {
     Open,
     Reached,
 }
 
-struct RoomMessageCache {
-    messages: VecDeque<Msg>,
+struct RoomTimelineCache {
+    messages: VecDeque<Event>,
     begin: CacheEndState,
     end: CacheEndState,
 }
 
-impl std::default::Default for RoomMessageCache {
+impl std::default::Default for RoomTimelineCache {
     fn default() -> Self {
-        RoomMessageCache {
+        RoomTimelineCache {
             messages: VecDeque::new(),
             begin: CacheEndState::Open,
             end: CacheEndState::Open,
@@ -57,110 +57,110 @@ impl std::default::Default for RoomMessageCache {
 }
 
 #[derive(Debug)]
-enum MsgWalkResult<'a> {
-    Message(RoomMessageIndex<'a>),
+enum EventWalkResult<'a> {
+    Message(RoomTimelineIndex<'a>),
     RequiresFetchFrom(EventId),
     End,
 }
 
 #[derive(Debug)]
-enum MsgWalkResultNewest<'a> {
-    Message(RoomMessageIndex<'a>),
+enum EventWalkResultNewest<'a> {
+    Message(RoomTimelineIndex<'a>),
     RequiresFetch,
     End,
 }
 
 #[derive(Copy, Clone, Debug)]
-struct RoomMessageIndex<'a> {
+struct RoomTimelineIndex<'a> {
     pos: usize,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
-impl RoomMessageIndex<'_> {
+impl RoomTimelineIndex<'_> {
     fn new(pos: usize) -> Self {
-        RoomMessageIndex {
+        RoomTimelineIndex {
             pos,
             _marker: std::marker::PhantomData::default(),
         }
     }
 }
 
-impl RoomMessageCache {
+impl RoomTimelineCache {
     fn begin(&self) -> Option<&EventId> {
-        self.messages.front().map(|m| &m.event_id)
+        self.messages.front().map(|m| m.event_id())
     }
     fn end(&self) -> Option<&EventId> {
-        self.messages.back().map(|m| &m.event_id)
+        self.messages.back().map(|m| m.event_id())
     }
 
     fn clear(&mut self) {
         self.messages.clear();
     }
 
-    fn append(&mut self, msg: Msg) {
+    fn append(&mut self, msg: Event) {
         self.messages.push_back(msg)
     }
-    fn prepend(&mut self, msg: Msg) {
+    fn prepend(&mut self, msg: Event) {
         self.messages.push_front(msg)
     }
 
-    fn message(&self, id: RoomMessageIndex) -> &Msg {
+    fn message(&self, id: RoomTimelineIndex) -> &Event {
         &self.messages[id.pos]
     }
 
-    fn walk_from_known(&self, id: &EventId) -> MsgWalkResult {
+    fn walk_from_known(&self, id: &EventId) -> EventWalkResult {
         if let Some((i, _)) = self
             .messages
             .iter()
             .enumerate()
-            .find(|(_, m)| m.event_id == *id)
+            .find(|(_, m)| *m.event_id() == *id)
         {
-            MsgWalkResult::Message(RoomMessageIndex::new(i))
+            EventWalkResult::Message(RoomTimelineIndex::new(i))
         } else {
-            MsgWalkResult::RequiresFetchFrom(id.clone())
+            EventWalkResult::RequiresFetchFrom(id.clone())
         }
     }
 
-    fn walk_from_newest(&self) -> MsgWalkResultNewest {
+    fn walk_from_newest(&self) -> EventWalkResultNewest {
         match self.end {
             CacheEndState::Reached => {
                 if !self.messages.is_empty() {
-                    MsgWalkResultNewest::Message(RoomMessageIndex::new(self.messages.len() - 1))
+                    EventWalkResultNewest::Message(RoomTimelineIndex::new(self.messages.len() - 1))
                 } else {
-                    MsgWalkResultNewest::End
+                    EventWalkResultNewest::End
                 }
             }
-            CacheEndState::Open => MsgWalkResultNewest::RequiresFetch,
+            CacheEndState::Open => EventWalkResultNewest::RequiresFetch,
         }
     }
 
-    fn next<'a>(&'a self, pos: RoomMessageIndex<'a>) -> MsgWalkResult<'a> {
+    fn next<'a>(&'a self, pos: RoomTimelineIndex<'a>) -> EventWalkResult<'a> {
         let new_pos = pos.pos + 1;
         if new_pos < self.messages.len() {
-            MsgWalkResult::Message(RoomMessageIndex::new(new_pos))
+            EventWalkResult::Message(RoomTimelineIndex::new(new_pos))
         } else {
             match self.end {
-                CacheEndState::Reached => MsgWalkResult::End,
+                CacheEndState::Reached => EventWalkResult::End,
                 CacheEndState::Open => {
                     let id = self
                         .end()
                         .expect("Since we have pos, messages cannot be empty");
-                    MsgWalkResult::RequiresFetchFrom(id.clone())
+                    EventWalkResult::RequiresFetchFrom(id.clone())
                 }
             }
         }
     }
-    fn previous<'a>(&'a self, pos: RoomMessageIndex<'a>) -> MsgWalkResult<'a> {
+    fn previous<'a>(&'a self, pos: RoomTimelineIndex<'a>) -> EventWalkResult<'a> {
         if pos.pos > 0 {
-            MsgWalkResult::Message(RoomMessageIndex::new(pos.pos - 1))
+            EventWalkResult::Message(RoomTimelineIndex::new(pos.pos - 1))
         } else {
             match self.begin {
-                CacheEndState::Reached => MsgWalkResult::End,
+                CacheEndState::Reached => EventWalkResult::End,
                 CacheEndState::Open => {
                     let id = self
                         .begin()
                         .expect("Since we have pos, messages cannot be empty");
-                    MsgWalkResult::RequiresFetchFrom(id.clone())
+                    EventWalkResult::RequiresFetchFrom(id.clone())
                 }
             }
         }
@@ -168,7 +168,7 @@ impl RoomMessageCache {
 }
 
 pub struct State {
-    messages: BTreeMap<RoomId, RoomMessageCache>,
+    messages: BTreeMap<RoomId, RoomTimelineCache>,
     rooms: BTreeMap<RoomId, String>,
 }
 
@@ -434,12 +434,9 @@ async fn run_matrix_task_loop(c: Connection, mut tasks: Receiver<tui::Task>) {
 
                 fn transform_events(
                     i: impl Iterator<Item = SyncRoomEvent>,
-                ) -> impl Iterator<Item = Msg> {
+                ) -> impl Iterator<Item = Event> {
                     i.filter_map(|msg| match msg.event.deserialize() {
-                        Ok(AnySyncRoomEvent::Message(AnySyncMessageEvent::RoomMessage(e))) => {
-                            let msg: SyncMessageEvent<_> = e.into();
-                            Some(msg)
-                        }
+                        Ok(AnySyncRoomEvent::Message(e)) => Some(e),
                         Ok(o) => {
                             tracing::warn!("Unexpected event in get_messages call {:?}", o);
                             None
@@ -461,7 +458,7 @@ async fn run_matrix_task_loop(c: Connection, mut tasks: Receiver<tui::Task>) {
                         tui::MessageQuery::BeforeCache => {
                             let mut iter = transform_events(msgs.into_iter());
                             if let Some(e) = iter.next() {
-                                if m.begin() != Some(&e.event_id) {
+                                if m.begin() != Some(e.event_id()) {
                                     m.clear();
                                     m.prepend(e);
                                 }
@@ -473,7 +470,7 @@ async fn run_matrix_task_loop(c: Connection, mut tasks: Receiver<tui::Task>) {
                         tui::MessageQuery::Newest => {
                             let mut iter = transform_events(msgs.into_iter().rev());
                             if let Some(e) = iter.next() {
-                                if m.end() != Some(&e.event_id) {
+                                if m.end() != Some(e.event_id()) {
                                     m.clear();
                                     m.append(e);
                                 }

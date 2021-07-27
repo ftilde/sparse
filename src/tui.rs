@@ -15,7 +15,7 @@ use unsegen::widget::*;
 use matrix_sdk::ruma::events::room::message::MessageType;
 use matrix_sdk::ruma::identifiers::{EventId, RoomId};
 
-use crate::{MsgWalkResult, MsgWalkResultNewest, State};
+use crate::{EventWalkResult, EventWalkResultNewest, State};
 
 struct Rooms<'a>(&'a State, &'a TuiState);
 
@@ -88,6 +88,28 @@ impl Scrollable for RoomsMut<'_> {
 
 struct Messages<'a>(&'a State, &'a TuiState, &'a RefCell<Vec<Task>>);
 
+fn format_event(e: &crate::Event) -> String {
+    match e {
+        crate::Event::RoomMessage(msg) => match &msg.content.msgtype {
+            MessageType::Text(text) => {
+                format!("{}: {:?}, {}", msg.sender, msg.event_id, text.body)
+            }
+            o => {
+                format!("{}: Other message {:?}", msg.sender, o)
+            }
+        },
+        crate::Event::RoomEncrypted(msg) => {
+            format!(
+                "{}: {:?}, *Unable to decrypt message*",
+                msg.sender, msg.event_id
+            )
+        }
+        o => {
+            format!("Other event {:?}", o)
+        }
+    }
+}
+
 impl Widget for Messages<'_> {
     fn space_demand(&self) -> unsegen::widget::Demand2D {
         Demand2D {
@@ -108,14 +130,14 @@ impl Widget for Messages<'_> {
             if let Some(messages) = self.0.messages.get(&room.id) {
                 let mut msg = match &room.current_message {
                     MessageSelection::Newest => match messages.walk_from_newest() {
-                        MsgWalkResultNewest::Message(m) => MsgWalkResult::Message(m),
-                        MsgWalkResultNewest::End => MsgWalkResult::End,
-                        MsgWalkResultNewest::RequiresFetch => {
+                        EventWalkResultNewest::Message(m) => EventWalkResult::Message(m),
+                        EventWalkResultNewest::End => EventWalkResult::End,
+                        EventWalkResultNewest::RequiresFetch => {
                             tracing::warn!("fetch newest");
                             write!(&mut c, "[...]").unwrap();
                             let mut m = self.2.borrow_mut();
                             m.push(Task::MoreMessages(room.id.clone(), MessageQuery::Newest));
-                            MsgWalkResult::End
+                            EventWalkResult::End
                         }
                     },
                     MessageSelection::Specific(id) => messages.walk_from_known(&id),
@@ -125,20 +147,13 @@ impl Widget for Messages<'_> {
                 loop {
                     tracing::warn!("msg={:?}", msg);
                     msg = match msg {
-                        MsgWalkResult::Message(id) => {
+                        EventWalkResult::Message(id) => {
                             let msg = messages.message(id);
                             let (_, row) = c.get_position();
                             if row < 0 {
                                 break;
                             }
-                            let text = match &msg.content.msgtype {
-                                MessageType::Text(text) => {
-                                    format!("{}: {:?}, {}", msg.sender, msg.event_id, text.body)
-                                }
-                                o => {
-                                    format!("{}: Other message {:?}", msg.sender, o)
-                                }
-                            };
+                            let text = format_event(&msg);
                             //TODO: what about line wrapping due to small window size?
                             let wraps = text.chars().filter(|c| *c == '\n').count() as i32;
                             c.move_to_y(row - wraps);
@@ -146,10 +161,10 @@ impl Widget for Messages<'_> {
                             c.move_to(AxisIndex::new(0), row - wraps - 1);
                             messages.previous(id)
                         }
-                        MsgWalkResult::End => {
+                        EventWalkResult::End => {
                             break;
                         }
-                        MsgWalkResult::RequiresFetchFrom(_tok) => {
+                        EventWalkResult::RequiresFetchFrom(_tok) => {
                             write!(&mut c, "[...]").unwrap();
                             let mut m = self.2.borrow_mut();
                             m.push(Task::MoreMessages(
