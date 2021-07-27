@@ -1,174 +1,31 @@
 use std::{env, process::exit};
 
+mod timeline;
 mod tui;
 
 use matrix_sdk::{
     self, async_trait,
-    deserialized_responses::SyncRoomEvent,
     room::Room,
     ruma::events::{
         room::message::MessageEventContent,
         room::{
-            aliases::AliasesEventContent,
-            //avatar::AvatarEventContent,
-            canonical_alias::CanonicalAliasEventContent,
-            //join_rules::JoinRulesEventContent,
-            member::MemberEventContent,
-            //message::{feedback::FeedbackEventContent, MessageEventContent as EventEventContent},
-            name::NameEventContent,
-            //power_levels::PowerLevelsEventContent,
-            //redaction::SyncRedactionEvent,
-            //tombstone::TombstoneEventContent,
+            aliases::AliasesEventContent, canonical_alias::CanonicalAliasEventContent,
+            member::MemberEventContent, name::NameEventContent,
         },
-        AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent, SyncMessageEvent,
-        SyncStateEvent,
+        AnyMessageEventContent, SyncMessageEvent, SyncStateEvent,
     },
-    ruma::identifiers::{EventId, RoomId},
+    ruma::identifiers::RoomId,
     Client, ClientConfig, EventHandler, Session, SyncSettings,
 };
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use url::Url;
 
-type Event = AnySyncMessageEvent;
-
-enum CacheEndState {
-    Open,
-    Reached,
-}
-
-struct RoomTimelineCache {
-    messages: VecDeque<Event>,
-    begin: CacheEndState,
-    end: CacheEndState,
-}
-
-impl std::default::Default for RoomTimelineCache {
-    fn default() -> Self {
-        RoomTimelineCache {
-            messages: VecDeque::new(),
-            begin: CacheEndState::Open,
-            end: CacheEndState::Open,
-        }
-    }
-}
-
-#[derive(Debug)]
-enum EventWalkResult<'a> {
-    Message(RoomTimelineIndex<'a>),
-    RequiresFetchFrom(EventId),
-    End,
-}
-
-#[derive(Debug)]
-enum EventWalkResultNewest<'a> {
-    Message(RoomTimelineIndex<'a>),
-    RequiresFetch,
-    End,
-}
-
-#[derive(Copy, Clone, Debug)]
-struct RoomTimelineIndex<'a> {
-    pos: usize,
-    _marker: std::marker::PhantomData<&'a ()>,
-}
-
-impl RoomTimelineIndex<'_> {
-    fn new(pos: usize) -> Self {
-        RoomTimelineIndex {
-            pos,
-            _marker: std::marker::PhantomData::default(),
-        }
-    }
-}
-
-impl RoomTimelineCache {
-    fn begin(&self) -> Option<&EventId> {
-        self.messages.front().map(|m| m.event_id())
-    }
-    fn end(&self) -> Option<&EventId> {
-        self.messages.back().map(|m| m.event_id())
-    }
-
-    fn clear(&mut self) {
-        self.messages.clear();
-    }
-
-    fn append(&mut self, msg: Event) {
-        self.messages.push_back(msg)
-    }
-    fn prepend(&mut self, msg: Event) {
-        self.messages.push_front(msg)
-    }
-
-    fn message(&self, id: RoomTimelineIndex) -> &Event {
-        &self.messages[id.pos]
-    }
-
-    fn walk_from_known(&self, id: &EventId) -> EventWalkResult {
-        if let Some((i, _)) = self
-            .messages
-            .iter()
-            .enumerate()
-            .find(|(_, m)| *m.event_id() == *id)
-        {
-            EventWalkResult::Message(RoomTimelineIndex::new(i))
-        } else {
-            EventWalkResult::RequiresFetchFrom(id.clone())
-        }
-    }
-
-    fn walk_from_newest(&self) -> EventWalkResultNewest {
-        match self.end {
-            CacheEndState::Reached => {
-                if !self.messages.is_empty() {
-                    EventWalkResultNewest::Message(RoomTimelineIndex::new(self.messages.len() - 1))
-                } else {
-                    EventWalkResultNewest::End
-                }
-            }
-            CacheEndState::Open => EventWalkResultNewest::RequiresFetch,
-        }
-    }
-
-    fn next<'a>(&'a self, pos: RoomTimelineIndex<'a>) -> EventWalkResult<'a> {
-        let new_pos = pos.pos + 1;
-        if new_pos < self.messages.len() {
-            EventWalkResult::Message(RoomTimelineIndex::new(new_pos))
-        } else {
-            match self.end {
-                CacheEndState::Reached => EventWalkResult::End,
-                CacheEndState::Open => {
-                    let id = self
-                        .end()
-                        .expect("Since we have pos, messages cannot be empty");
-                    EventWalkResult::RequiresFetchFrom(id.clone())
-                }
-            }
-        }
-    }
-    fn previous<'a>(&'a self, pos: RoomTimelineIndex<'a>) -> EventWalkResult<'a> {
-        if pos.pos > 0 {
-            EventWalkResult::Message(RoomTimelineIndex::new(pos.pos - 1))
-        } else {
-            match self.begin {
-                CacheEndState::Reached => EventWalkResult::End,
-                CacheEndState::Open => {
-                    let id = self
-                        .begin()
-                        .expect("Since we have pos, messages cannot be empty");
-                    EventWalkResult::RequiresFetchFrom(id.clone())
-                }
-            }
-        }
-    }
-}
-
 pub struct State {
-    messages: BTreeMap<RoomId, RoomTimelineCache>,
+    messages: BTreeMap<RoomId, timeline::RoomTimelineCache>,
     rooms: BTreeMap<RoomId, String>,
 }
 
@@ -227,7 +84,7 @@ impl EventHandler for Connection {
         //self.add_room_message(&room, event).await;
         let mut state = self.state.lock().await;
         let m = state.messages.entry(room.room_id().clone()).or_default();
-        m.end = CacheEndState::Open;
+        m.notify_new_messages();
         self.update().await;
     }
     async fn on_room_member(&self, room: Room, _: &SyncStateEvent<MemberEventContent>) {
@@ -408,92 +265,19 @@ async fn run_matrix_task_loop(c: Connection, mut tasks: Receiver<tui::Task>) {
             }
             tui::Task::MoreMessages(rid, query) => {
                 let room = c.client.get_room(&rid).unwrap();
-                use matrix_sdk::ruma::api::client::r0::message::get_message_events::Direction;
-                let (direction, start, end) = {
+
+                let query = {
                     let mut state = c.state.lock().await;
                     let m = state.messages.entry(rid.clone()).or_default();
 
-                    match &query {
-                        tui::MessageQuery::AfterCache => {
-                            (Direction::Forward, m.end().cloned(), None)
-                        }
-                        tui::MessageQuery::BeforeCache => {
-                            (Direction::Backward, m.begin().cloned(), None)
-                        }
-                        tui::MessageQuery::Newest => (Direction::Backward, None, m.end().cloned()),
-                    }
+                    m.events_query(room, query)
                 };
 
-                let messages = room
-                    .messages(start.as_ref(), end.as_ref(), 10, direction)
-                    .await
-                    .unwrap();
+                let res = query.await.unwrap();
 
                 let mut state = c.state.lock().await;
                 let m = state.messages.entry(rid).or_default();
-
-                fn transform_events(
-                    i: impl Iterator<Item = SyncRoomEvent>,
-                ) -> impl Iterator<Item = Event> {
-                    i.filter_map(|msg| match msg.event.deserialize() {
-                        Ok(AnySyncRoomEvent::Message(e)) => Some(e),
-                        Ok(o) => {
-                            tracing::warn!("Unexpected event in get_messages call {:?}", o);
-                            None
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to deserialize message {:?}", e);
-                            None
-                        }
-                    })
-                }
-
-                if let Some(msgs) = messages {
-                    match &query {
-                        tui::MessageQuery::AfterCache => {
-                            for msg in transform_events(msgs.into_iter()) {
-                                m.append(msg);
-                            }
-                        }
-                        tui::MessageQuery::BeforeCache => {
-                            let mut iter = transform_events(msgs.into_iter());
-                            if let Some(e) = iter.next() {
-                                if m.begin() != Some(e.event_id()) {
-                                    m.clear();
-                                    m.prepend(e);
-                                }
-                            }
-                            for msg in iter {
-                                m.prepend(msg);
-                            }
-                        }
-                        tui::MessageQuery::Newest => {
-                            let mut iter = transform_events(msgs.into_iter().rev());
-                            if let Some(e) = iter.next() {
-                                if m.end() != Some(e.event_id()) {
-                                    m.clear();
-                                    m.append(e);
-                                }
-                            }
-                            for msg in iter {
-                                m.append(msg);
-                            }
-                            m.end = CacheEndState::Reached;
-                        }
-                    }
-                } else {
-                    match &query {
-                        tui::MessageQuery::AfterCache => {
-                            m.end = CacheEndState::Reached;
-                        }
-                        tui::MessageQuery::BeforeCache => {
-                            m.begin = CacheEndState::Reached;
-                        }
-                        tui::MessageQuery::Newest => {
-                            m.end = CacheEndState::Reached;
-                        }
-                    }
-                }
+                m.update(res);
                 c.update().await;
             }
         }

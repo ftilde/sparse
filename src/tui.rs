@@ -15,7 +15,8 @@ use unsegen::widget::*;
 use matrix_sdk::ruma::events::room::message::MessageType;
 use matrix_sdk::ruma::identifiers::{EventId, RoomId};
 
-use crate::{EventWalkResult, EventWalkResultNewest, State};
+use crate::timeline::{EventWalkResult, EventWalkResultNewest, MessageQuery};
+use crate::State;
 
 struct Rooms<'a>(&'a State, &'a TuiState);
 
@@ -88,9 +89,9 @@ impl Scrollable for RoomsMut<'_> {
 
 struct Messages<'a>(&'a State, &'a TuiState, &'a RefCell<Vec<Task>>);
 
-fn format_event(e: &crate::Event) -> String {
+fn format_event(e: &crate::timeline::Event) -> String {
     match e {
-        crate::Event::RoomMessage(msg) => match &msg.content.msgtype {
+        crate::timeline::Event::RoomMessage(msg) => match &msg.content.msgtype {
             MessageType::Text(text) => {
                 format!("{}: {:?}, {}", msg.sender, msg.event_id, text.body)
             }
@@ -98,7 +99,7 @@ fn format_event(e: &crate::Event) -> String {
                 format!("{}: Other message {:?}", msg.sender, o)
             }
         },
-        crate::Event::RoomEncrypted(msg) => {
+        crate::timeline::Event::RoomEncrypted(msg) => {
             format!(
                 "{}: {:?}, *Unable to decrypt message*",
                 msg.sender, msg.event_id
@@ -241,13 +242,6 @@ fn tui<'a>(
 pub enum Event {
     Update,
     Input(Input),
-}
-
-#[derive(Debug)]
-pub enum MessageQuery {
-    BeforeCache,
-    AfterCache,
-    Newest,
 }
 
 #[derive(Debug)]
