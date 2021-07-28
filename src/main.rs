@@ -76,9 +76,7 @@ async fn login(config: Config) -> Result<Client, matrix_sdk::Error> {
             match rpassword::read_password_from_tty(Some("Password: ")) {
                 Ok(pw) if pw.is_empty() => {}
                 Ok(pw) => {
-                    let response = client
-                        .login(&config.user, &pw, None, Some("command bot"))
-                        .await;
+                    let response = client.login(&config.user, &pw, None, Some(APP_NAME)).await;
                     match response {
                         Ok(response) => {
                             let session = Session {
