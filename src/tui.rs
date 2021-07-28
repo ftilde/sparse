@@ -16,7 +16,7 @@ use matrix_sdk::ruma::events::room::message::MessageType;
 use matrix_sdk::ruma::identifiers::{EventId, RoomId};
 
 use crate::timeline::{EventWalkResult, EventWalkResultNewest, MessageQuery};
-use crate::State;
+use crate::tui_app::State;
 
 struct Rooms<'a>(&'a State, &'a TuiState);
 
@@ -24,12 +24,12 @@ impl Widget for Rooms<'_> {
     fn space_demand(&self) -> unsegen::widget::Demand2D {
         let w = self
             .0
-            .rooms
+            .rooms()
             .values()
             .map(|s| text_width(s))
             .max()
             .unwrap_or(PositiveAxisDiff::new_unchecked(0));
-        let h = self.0.rooms.len();
+        let h = self.0.rooms().len();
         Demand2D {
             width: ColDemand::exact(w),
             height: RowDemand::exact(h),
@@ -38,7 +38,7 @@ impl Widget for Rooms<'_> {
 
     fn draw(&self, mut window: Window, _hints: RenderingHints) {
         let mut c = Cursor::new(&mut window);
-        for (id, room) in self.0.rooms.iter() {
+        for (id, room) in self.0.rooms().iter() {
             let mut c = c.save().style_modifier();
             if Some(id) == self.1.current_room.as_ref().map(|r| &r.id) {
                 c.apply_style_modifier(StyleModifier::new().invert(true));
@@ -54,7 +54,7 @@ impl Scrollable for RoomsMut<'_> {
     //TODO: we may want wrapping?
     fn scroll_backwards(&mut self) -> OperationResult {
         self.1.current_room = if let Some(current) = self.1.current_room.take() {
-            let mut it = self.0.rooms.range(..current.id.clone()).rev();
+            let mut it = self.0.rooms().range(..current.id.clone()).rev();
             Some(
                 it.next()
                     .map(|(k, _)| RoomState::at_last_message(k))
@@ -62,7 +62,7 @@ impl Scrollable for RoomsMut<'_> {
             )
         } else {
             self.0
-                .rooms
+                .rooms()
                 .keys()
                 .rev()
                 .next()
@@ -73,7 +73,7 @@ impl Scrollable for RoomsMut<'_> {
 
     fn scroll_forwards(&mut self) -> OperationResult {
         self.1.current_room = if let Some(current) = self.1.current_room.take() {
-            let mut it = self.0.rooms.range(current.id.clone()..);
+            let mut it = self.0.rooms().range(current.id.clone()..);
             it.next();
             Some(
                 it.next()
@@ -81,7 +81,7 @@ impl Scrollable for RoomsMut<'_> {
                     .unwrap_or(current),
             )
         } else {
-            self.0.rooms.keys().next().map(RoomState::at_last_message)
+            self.0.rooms().keys().next().map(RoomState::at_last_message)
         };
         Ok(())
     }
@@ -128,7 +128,7 @@ impl Widget for Messages<'_> {
         tracing::warn!("1");
         if let Some(room) = self.1.current_room.as_ref() {
             tracing::warn!("2");
-            if let Some(messages) = self.0.messages.get(&room.id) {
+            if let Some(messages) = self.0.messages().get(&room.id) {
                 let mut msg = match &room.current_message {
                     MessageSelection::Newest => match messages.walk_from_newest() {
                         EventWalkResultNewest::Message(m) => EventWalkResult::Message(m),
@@ -260,7 +260,7 @@ pub async fn run_tui(
     let mut tui_state = {
         let state = state.lock().await;
 
-        let current_room = if let Some(id) = state.rooms.keys().next() {
+        let current_room = if let Some(id) = state.rooms().keys().next() {
             Some(RoomState {
                 id: id.clone(),
                 current_message: MessageSelection::Newest,
