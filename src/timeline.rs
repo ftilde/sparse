@@ -1,13 +1,11 @@
 use matrix_sdk::ruma::api::client::r0::message::get_message_events::Direction;
 use matrix_sdk::{
-    deserialized_responses::SyncRoomEvent,
-    room::Room,
-    ruma::events::{AnySyncMessageEvent, AnySyncRoomEvent},
+    deserialized_responses::SyncRoomEvent, room::Room, ruma::events::AnySyncRoomEvent,
     ruma::identifiers::EventId,
 };
 use std::collections::VecDeque;
 
-pub type Event = AnySyncMessageEvent;
+pub type Event = AnySyncRoomEvent;
 
 pub enum CacheEndState {
     Open,
@@ -169,11 +167,7 @@ impl RoomTimelineCache {
     pub fn update(&mut self, query_result: MessageQueryResult) {
         fn transform_events(i: impl Iterator<Item = SyncRoomEvent>) -> impl Iterator<Item = Event> {
             i.filter_map(|msg| match msg.event.deserialize() {
-                Ok(AnySyncRoomEvent::Message(e)) => Some(e),
-                Ok(o) => {
-                    tracing::warn!("Unexpected event in get_messages call {:?}", o);
-                    None
-                }
+                Ok(e) => Some(e),
                 Err(e) => {
                     tracing::warn!("Failed to deserialize message {:?}", e);
                     None

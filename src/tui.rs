@@ -12,7 +12,7 @@ use unsegen::input::{
 use unsegen::widget::builtin::*;
 use unsegen::widget::*;
 
-use matrix_sdk::ruma::events::room::message::MessageType;
+use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
 use matrix_sdk::ruma::identifiers::{EventId, RoomId};
 
 use crate::timeline::{EventWalkResult, EventWalkResultNewest, MessageQuery};
@@ -91,20 +91,25 @@ struct Messages<'a>(&'a State, &'a TuiState, &'a RefCell<Vec<Task>>);
 
 fn format_event(e: &crate::timeline::Event) -> String {
     match e {
-        crate::timeline::Event::RoomMessage(msg) => match &msg.content.msgtype {
-            MessageType::Text(text) => {
-                format!("{}: {:?}, {}", msg.sender, msg.event_id, text.body)
+        crate::timeline::Event::Message(e) => match e {
+            AnySyncMessageEvent::RoomMessage(msg) => match &msg.content.msgtype {
+                MessageType::Text(text) => {
+                    format!("{}: {:?}, {}", msg.sender, msg.event_id, text.body)
+                }
+                o => {
+                    format!("{}: Other message {:?}", msg.sender, o)
+                }
+            },
+            AnySyncMessageEvent::RoomEncrypted(msg) => {
+                format!(
+                    "{}: {:?}, *Unable to decrypt message*",
+                    msg.sender, msg.event_id
+                )
             }
             o => {
-                format!("{}: Other message {:?}", msg.sender, o)
+                format!("Other event {:?}", o)
             }
         },
-        crate::timeline::Event::RoomEncrypted(msg) => {
-            format!(
-                "{}: {:?}, *Unable to decrypt message*",
-                msg.sender, msg.event_id
-            )
-        }
         o => {
             format!("Other event {:?}", o)
         }

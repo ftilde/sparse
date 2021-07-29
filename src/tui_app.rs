@@ -53,12 +53,14 @@ struct Connection {
 
 impl Connection {
     pub async fn update(&self) {
-        self.events
-            .lock()
-            .await
-            .send(tui::Event::Update)
-            .await
-            .unwrap();
+        match self.events.lock().await.try_send(tui::Event::Update) {
+            Ok(_) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                /* We don't care if we can't send an update, since if the queue is full, the tui
+                 * will be updated from these events anyway */
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => panic!("events was closed"),
+        }
     }
     async fn update_room_info(&self, room: Room) {
         let display_name = room.display_name().await.unwrap();
@@ -144,8 +146,8 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
         messages: BTreeMap::new(),
     }));
 
-    let (event_sender, event_receiver) = channel(5);
-    let (task_sender, task_receiver) = channel(5);
+    let (event_sender, event_receiver) = channel(1);
+    let (task_sender, task_receiver) = channel(1);
 
     let connection = Connection {
         client: client.clone(),
