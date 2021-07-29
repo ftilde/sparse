@@ -6,7 +6,9 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
         .await
         .expect("Can't get devices from server");
 
-    println!("ID\tDevice name\tverified",);
+    println!("ID\tDevice name\tverified\tcurrent",);
+
+    let current_device = client.device_id().await.unwrap();
 
     let user_id = client.user_id().await.unwrap();
     for device in response.devices {
@@ -14,7 +16,7 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
             .get_device(&user_id, &*device.device_id)
             .await
             .unwrap();
-        println!(
+        print!(
             "{}\t{}\t{}",
             device.device_id,
             device.display_name.as_deref().unwrap_or(""),
@@ -22,6 +24,11 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
                 .map(|d| d.verified().to_string())
                 .unwrap_or("unknown".to_owned())
         );
+        if device.device_id == current_device {
+            println!("\t*");
+        } else {
+            println!();
+        }
     }
 
     Ok(())
