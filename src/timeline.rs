@@ -28,11 +28,21 @@ impl std::default::Default for RoomTimelineCache {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EventWalkResult<'a> {
     Message(RoomTimelineIndex<'a>),
     RequiresFetchFrom(EventId),
     End,
+}
+
+impl<'a> EventWalkResult<'a> {
+    pub fn message(&self) -> Option<RoomTimelineIndex<'a>> {
+        if let EventWalkResult::Message(m) = self {
+            Some(*m)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -40,6 +50,16 @@ pub enum EventWalkResultNewest<'a> {
     Message(RoomTimelineIndex<'a>),
     RequiresFetch,
     End,
+}
+
+impl<'a> EventWalkResultNewest<'a> {
+    pub fn message(&self) -> Option<RoomTimelineIndex<'a>> {
+        if let EventWalkResultNewest::Message(m) = self {
+            Some(*m)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -178,7 +198,16 @@ impl RoomTimelineCache {
         if let Some(msgs) = query_result.events {
             match query_result.query {
                 MessageQuery::AfterCache => {
-                    for msg in transform_events(msgs.into_iter()) {
+                    let mut iter = transform_events(msgs.into_iter().rev());
+                    if let Some(e) = iter.next() {
+                        if self.end() != Some(e.event_id()) {
+                            self.clear();
+                            self.append(e);
+                        }
+                    }
+                    self.end = CacheEndState::Reached;
+                    for msg in iter {
+                        self.end = CacheEndState::Open;
                         self.append(msg);
                     }
                 }
@@ -190,7 +219,9 @@ impl RoomTimelineCache {
                             self.prepend(e);
                         }
                     }
+                    self.begin = CacheEndState::Reached;
                     for msg in iter {
+                        self.begin = CacheEndState::Open;
                         self.prepend(msg);
                     }
                 }
