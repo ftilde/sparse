@@ -224,7 +224,7 @@ impl RoomTimelineCache {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum MessageQuery {
     BeforeCache,
     AfterCache,

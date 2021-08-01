@@ -1,10 +1,7 @@
 use std::cell::RefCell;
 use std::io::stdout;
 use std::sync::Arc;
-use tokio::sync::{
-    mpsc::{Receiver, Sender},
-    Mutex,
-};
+use tokio::sync::{mpsc, watch, Mutex};
 use unsegen::base::*;
 use unsegen::input::{
     EditBehavior, Editable, Input, Key, OperationResult, ScrollBehavior, Scrollable,
@@ -87,7 +84,25 @@ impl Scrollable for RoomsMut<'_> {
     }
 }
 
-struct Messages<'a>(&'a State, &'a TuiState, &'a RefCell<Vec<Task>>);
+#[derive(Copy, Clone)]
+struct Tasks<'a> {
+    tasks: &'a RefCell<Vec<Task>>,
+    message_query: &'a RefCell<Option<MessageQueryRequest>>,
+}
+
+impl Tasks<'_> {
+    fn add_message_query(&self, room: RoomId, query: MessageQuery) {
+        let mut q = self.message_query.borrow_mut();
+        *q = Some(MessageQueryRequest { room, kind: query });
+    }
+
+    fn add_task(&self, task: Task) {
+        let mut t = self.tasks.borrow_mut();
+        t.push(task);
+    }
+}
+
+struct Messages<'a>(&'a State, &'a TuiState, Tasks<'a>);
 
 fn format_event(e: &crate::timeline::Event) -> String {
     match e {
@@ -141,8 +156,8 @@ impl Widget for Messages<'_> {
                         EventWalkResultNewest::RequiresFetch => {
                             tracing::warn!("fetch newest");
                             write!(&mut c, "[...]").unwrap();
-                            let mut m = self.2.borrow_mut();
-                            m.push(Task::MoreMessages(room.id.clone(), MessageQuery::Newest));
+                            self.2
+                                .add_message_query(room.id.clone(), MessageQuery::Newest);
                             EventWalkResult::End
                         }
                     },
@@ -172,11 +187,8 @@ impl Widget for Messages<'_> {
                         }
                         EventWalkResult::RequiresFetchFrom(_tok) => {
                             write!(&mut c, "[...]").unwrap();
-                            let mut m = self.2.borrow_mut();
-                            m.push(Task::MoreMessages(
-                                room.id.clone(),
-                                MessageQuery::BeforeCache,
-                            ));
+                            self.2
+                                .add_message_query(room.id.clone(), MessageQuery::BeforeCache);
                             break;
                         }
                     };
@@ -191,12 +203,11 @@ impl Widget for Messages<'_> {
                 //}
             } else {
                 write!(&mut c, "[...]").unwrap();
-                let mut m = self.2.borrow_mut();
                 let query = match &room.current_message {
                     MessageSelection::Newest => MessageQuery::Newest,
                     MessageSelection::Specific(_id) => MessageQuery::BeforeCache,
                 };
-                m.push(Task::MoreMessages(room.id.clone(), query));
+                self.2.add_message_query(room.id.clone(), query);
             }
         }
     }
@@ -226,11 +237,7 @@ struct TuiState {
     current_room: Option<RoomState>,
 }
 
-fn tui<'a>(
-    state: &'a State,
-    tui_state: &'a TuiState,
-    tasks: &'a RefCell<Vec<Task>>,
-) -> impl Widget + 'a {
+fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl Widget + 'a {
     HLayout::new()
         .separator(GraphemeCluster::try_from('|').unwrap())
         .widget_weighted(Rooms(state, tui_state), 0.0)
@@ -252,12 +259,18 @@ pub enum Event {
 #[derive(Debug)]
 pub enum Task {
     Send(RoomId, String),
-    MoreMessages(RoomId, MessageQuery),
+}
+
+#[derive(Clone)]
+pub struct MessageQueryRequest {
+    pub room: RoomId,
+    pub kind: MessageQuery,
 }
 
 pub async fn run_tui(
-    mut events: Receiver<Event>,
-    task_sink: Sender<Task>,
+    mut events: mpsc::Receiver<Event>,
+    task_sink: mpsc::Sender<Task>,
+    message_query_sink: watch::Sender<Option<MessageQueryRequest>>,
     state: Arc<Mutex<State>>,
 ) {
     let stdout = stdout();
@@ -281,19 +294,30 @@ pub async fn run_tui(
 
     let mut run = true;
 
-    let mut tasks = RefCell::new(Vec::new());
+    let task_vec = RefCell::new(Vec::new());
+    let message_query = RefCell::new(None);
+
+    let tasks = Tasks {
+        tasks: &task_vec,
+        message_query: &message_query,
+    };
     while run {
         {
             let state = state.lock().await;
             let win = term.create_root_window();
-            tui(&state, &tui_state, &tasks).draw(win, RenderingHints::new().active(true));
+            tui(&state, &tui_state, tasks).draw(win, RenderingHints::new().active(true));
         }
         term.present();
 
         // TODO: somehow we need to make sure that this does not block. at the moment it still
         // might do so because the channel has 5 elements.
-        for t in tasks.get_mut().drain(..) {
+        for t in tasks.tasks.borrow_mut().drain(..) {
             task_sink.send(t).await.unwrap();
+        }
+        if let Some(query) = tasks.message_query.borrow_mut().take() {
+            if message_query_sink.send(Some(query)).is_err() {
+                return;
+            }
         }
 
         match events.recv().await.unwrap() {
@@ -316,7 +340,7 @@ pub async fn run_tui(
                         if let Some(room) = &tui_state.current_room {
                             let msg = tui_state.msg_edit.get().to_owned();
                             if !msg.is_empty() {
-                                tasks.get_mut().push(Task::Send(room.id.clone(), msg));
+                                tasks.add_task(Task::Send(room.id.clone(), msg));
                                 tui_state.msg_edit.clear().unwrap();
                             }
                         }
@@ -335,7 +359,7 @@ pub async fn run_tui(
 //    }
 //}
 
-pub fn start_keyboard_thread(sink: Sender<Event>) {
+pub fn start_keyboard_thread(sink: mpsc::Sender<Event>) {
     let _ = std::thread::Builder::new()
         .name("input".to_owned())
         .spawn(move || {

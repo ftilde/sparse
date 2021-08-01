@@ -18,8 +18,7 @@ use crate::tui;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, watch, Mutex};
 
 pub struct State {
     messages: BTreeMap<RoomId, timeline::RoomTimelineCache>,
@@ -48,7 +47,7 @@ async fn run_matrix_event_loop(connection: Connection) {
 struct Connection {
     client: Client,
     state: Arc<Mutex<State>>,
-    events: Arc<Mutex<Sender<tui::Event>>>,
+    events: Arc<Mutex<mpsc::Sender<tui::Event>>>,
 }
 
 impl Connection {
@@ -107,7 +106,7 @@ impl EventHandler for Connection {
     }
 }
 
-async fn run_matrix_task_loop(c: Connection, mut tasks: Receiver<tui::Task>) {
+async fn run_matrix_task_loop(c: Connection, mut tasks: mpsc::Receiver<tui::Task>) {
     while let Some(task) = tasks.recv().await {
         match task {
             tui::Task::Send(room_id, msg) => {
@@ -119,23 +118,33 @@ async fn run_matrix_task_loop(c: Connection, mut tasks: Receiver<tui::Task>) {
                     panic!("can't send message, no joined room"); //TODO: we probably want to log something
                 }
             }
-            tui::Task::MoreMessages(rid, query) => {
-                let room = c.client.get_room(&rid).unwrap();
+        }
+    }
+}
 
-                let query = {
-                    let mut state = c.state.lock().await;
-                    let m = state.messages.entry(rid.clone()).or_default();
+async fn run_matrix_message_fetch_loop(
+    c: Connection,
+    mut tasks: watch::Receiver<Option<tui::MessageQueryRequest>>,
+) {
+    while tasks.changed().await.is_ok() {
+        let task = { tasks.borrow().clone() };
+        if let Some(task) = task {
+            let rid = &task.room;
+            let room = c.client.get_room(rid).unwrap();
 
-                    m.events_query(room, query)
-                };
-
-                let res = query.await.unwrap();
-
+            let query = {
                 let mut state = c.state.lock().await;
-                let m = state.messages.entry(rid).or_default();
-                m.update(res);
-                c.update().await;
-            }
+                let m = state.messages.entry(rid.clone()).or_default();
+
+                m.events_query(room, task.kind)
+            };
+
+            let res = query.await.unwrap();
+
+            let mut state = c.state.lock().await;
+            let m = state.messages.get_mut(rid).unwrap();
+            m.update(res);
+            c.update().await;
         }
     }
 }
@@ -146,8 +155,9 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
         messages: BTreeMap::new(),
     }));
 
-    let (event_sender, event_receiver) = channel(1);
-    let (task_sender, task_receiver) = channel(1);
+    let (event_sender, event_receiver) = mpsc::channel(1);
+    let (task_sender, task_receiver) = mpsc::channel(1);
+    let (message_query_sender, message_query_receiver) = watch::channel(None);
 
     let connection = Connection {
         client: client.clone(),
@@ -210,12 +220,16 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
     }));
 
     let connection_events = connection.clone();
+    let connection_queries = connection.clone();
     let _task_loop = tokio::spawn(async { run_matrix_task_loop(connection, task_receiver).await });
     let _event_loop = tokio::spawn(async { run_matrix_event_loop(connection_events).await });
+    let _message_query_loop = tokio::spawn(async {
+        run_matrix_message_fetch_loop(connection_queries, message_query_receiver).await
+    });
     //tokio::spawn(async { tui::run_keyboard_loop(sender) });
     tui::start_keyboard_thread(event_sender);
 
-    tui::run_tui(event_receiver, task_sender, state).await;
+    tui::run_tui(event_receiver, task_sender, message_query_sender, state).await;
 
     Ok(())
 }
