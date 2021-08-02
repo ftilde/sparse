@@ -1237,26 +1237,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "matrix-test"
-version = "0.1.0"
-dependencies = [
- "backtrace",
- "dirs",
- "matrix-sdk",
- "nix",
- "rpassword",
- "serde",
- "serde_json",
- "structopt",
- "termion",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "unsegen",
- "url",
-]
-
-[[package]]
 name = "matrixmultiply"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2435,6 +2415,26 @@ checksum = "9e3dfc207c526015c632472a77be09cf1b6e46866581aecae5cc38fb4235dea2"
 dependencies = [
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "sparse"
+version = "0.1.0"
+dependencies = [
+ "backtrace",
+ "dirs",
+ "matrix-sdk",
+ "nix",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "structopt",
+ "termion",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "unsegen",
+ "url",
 ]
 
 [[package]]

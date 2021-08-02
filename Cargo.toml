@@ -1,5 +1,5 @@
 [package]
-name = "matrix-test"
+name = "sparse"
 version = "0.1.0"
 authors = ["ftilde <ftilde@tamepointer.de>"]
 edition = "2018"
