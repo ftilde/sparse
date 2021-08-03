@@ -44,7 +44,7 @@ fn try_store_session(config: &Config, session: &Session) -> Result<(), Box<dyn s
     Ok(())
 }
 
-const APP_NAME: &str = "sparse";
+const APP_NAME: &str = env!("CARGO_PKG_NAME");
 
 async fn try_restore_session(
     client: &Client,
@@ -76,7 +76,13 @@ async fn login(config: Config) -> Result<Client, matrix_sdk::Error> {
             match rpassword::read_password_from_tty(Some("Password: ")) {
                 Ok(pw) if pw.is_empty() => {}
                 Ok(pw) => {
-                    let response = client.login(&config.user, &pw, None, Some(APP_NAME)).await;
+                    let mut device_name = APP_NAME.to_string();
+                    if let Ok(hostname) = hostname::get() {
+                        device_name.push_str(&format!(" on {}", hostname.to_string_lossy()));
+                    };
+                    let response = client
+                        .login(&config.user, &pw, None, Some(&device_name))
+                        .await;
                     match response {
                         Ok(response) => {
                             let session = Session {
