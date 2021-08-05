@@ -1,5 +1,3 @@
-use matrix_sdk::ruma::events::key::verification::VerificationMethod;
-
 use matrix_sdk::{
     self,
     ruma::events::AnyToDeviceEvent,
@@ -51,17 +49,9 @@ fn print_result(sas: &SasVerification) {
     );
 }
 
-pub async fn run(client: Client, id: String) -> Result<(), matrix_sdk::Error> {
-    let user_id = client.user_id().await.unwrap();
-    let device = client
-        .get_device(&user_id, id.as_str().into())
-        .await?
-        .unwrap();
-
-    let _verification = device
-        .request_verification_with_methods(vec![VerificationMethod::SasV1])
-        .await?;
-
+pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
+    println!(
+        "Waiting for verification requests. Initiate verification using another device. This device's id is {}", client.device_id().await.unwrap());
     let client = &client;
     client
         .sync_with_callback(SyncSettings::new(), |response| async move {

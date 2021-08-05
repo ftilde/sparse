@@ -2,7 +2,8 @@ mod devices;
 mod timeline;
 mod tui;
 mod tui_app;
-mod verification;
+mod verification_initiate;
+mod verification_wait;
 
 use matrix_sdk::{self, Client, ClientConfig, Session};
 
@@ -124,7 +125,7 @@ struct Config {
 }
 
 #[derive(StructOpt)]
-struct Verify {
+struct VerifyInitiate {
     #[structopt()]
     device_id: String,
 }
@@ -135,8 +136,10 @@ enum Command {
     Tui,
     #[structopt(about = "List registered devices")]
     Devices,
-    #[structopt(about = "Verify a device")]
-    Verify(Verify),
+    #[structopt(about = "Start verification of a specific device")]
+    VerifyInitiate(VerifyInitiate),
+    #[structopt(about = "Wait for incoming device verifications")]
+    VerifyWait,
 }
 
 #[derive(StructOpt)]
@@ -164,6 +167,7 @@ async fn main() -> Result<(), matrix_sdk::Error> {
     match options.command.unwrap_or(Command::Tui) {
         Command::Tui => tui_app::run(client).await,
         Command::Devices => devices::run(client).await,
-        Command::Verify(v) => verification::run(client, v.device_id).await,
+        Command::VerifyInitiate(v) => verification_initiate::run(client, v.device_id).await,
+        Command::VerifyWait => verification_wait::run(client).await,
     }
 }

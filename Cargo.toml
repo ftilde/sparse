@@ -34,6 +34,6 @@ hostname = "0.3"
 #git = "https://github.com/matrix-org/matrix-rust-sdk"
 #rev = "ee40d917d1f20230de3ad368df7fda17cda66deb"
 git = "https://github.com/jsparber/matrix-rust-sdk"
-rev = "a92e2d1104b8ec37581ee704fbbfcd4c1f8e4af3"
+rev = "b1143fd0d0ec593140d56445939289577daed36e"
 #default-features = false
 #features = ["encryption", "sled_cryptostore", "require_auth_for_profile_requests", "native-tls", "sled_state_store"]
