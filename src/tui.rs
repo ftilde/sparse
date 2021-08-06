@@ -16,6 +16,8 @@ use matrix_sdk::ruma::identifiers::{EventId, RoomId};
 use crate::timeline::{EventWalkResult, EventWalkResultNewest, MessageQuery, RoomTimelineCache};
 use crate::tui_app::State;
 
+use nix::sys::signal;
+
 struct Rooms<'a>(&'a State, &'a TuiState);
 
 impl Widget for Rooms<'_> {
@@ -429,6 +431,7 @@ fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl 
 pub enum Event {
     Update,
     Input(Input),
+    Signal(signal::Signal),
 }
 
 #[derive(Debug)]
@@ -497,9 +500,24 @@ pub async fn run_tui(
 
         match events.recv().await.unwrap() {
             Event::Update => {}
-            Event::Input(i) => {
+            Event::Signal(signal::Signal::SIGWINCH) => { /* Just redraw the window */ }
+            Event::Signal(signal::Signal::SIGTSTP) => {
+                if let Err(e) = term.handle_sigtstp() {
+                    tracing::warn!("Unable to handle SIGTSTP: {}", e);
+                }
+            }
+            Event::Signal(signal::Signal::SIGTERM) => run = false,
+            Event::Signal(s) => {
+                tracing::warn!("Unhandled signal {}", s);
+            }
+            Event::Input(input) => {
+                let sig_behavior =
+                    unsegen_signals::SignalBehavior::new().on_default::<unsegen_signals::SIGTSTP>();
+                let input = input.chain(sig_behavior);
+
                 let mut state = state.lock().await;
-                i.chain((Key::Ctrl('q'), || run = false))
+                input
+                    .chain((Key::Ctrl('q'), || run = false))
                     .chain(
                         ScrollBehavior::new(&mut RoomsMut(&mut state, &mut tui_state))
                             .forwards_on(Key::Ctrl('n'))
@@ -529,25 +547,4 @@ pub async fn run_tui(
             }
         }
     }
-}
-// This ain't working because of stdin lock. we would need support in unsegen/termion
-//pub async fn run_keyboard_loop(sink: Sender<Event>) {
-//    let stdin = tokio::io::stdin();
-//    for e in Input::read_all(stdin) {
-//        if let Err(_) = sink.send(Event::Input(e.expect("event"))).await {
-//            break;
-//        }
-//    }
-//}
-
-pub fn start_keyboard_thread(sink: mpsc::Sender<Event>) {
-    let _ = std::thread::Builder::new()
-        .name("input".to_owned())
-        .spawn(move || {
-            let stdin = ::std::io::stdin();
-            let stdin = stdin.lock();
-            for e in Input::read_all(stdin) {
-                sink.blocking_send(Event::Input(e.expect("event"))).unwrap();
-            }
-        });
 }

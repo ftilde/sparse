@@ -16,9 +16,11 @@ use matrix_sdk::{
 use crate::timeline;
 use crate::tui;
 
+use nix::sys::signal::{SigSet, Signal};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
+use tui::Event;
 
 pub struct State {
     messages: BTreeMap<RoomId, timeline::RoomTimelineCache>,
@@ -149,6 +151,49 @@ async fn run_matrix_message_fetch_loop(
     }
 }
 
+fn signals_to_block() -> SigSet {
+    let mut signals_to_block = signals_to_wait();
+    signals_to_block.add(Signal::SIGCONT);
+    signals_to_block
+}
+fn signals_to_wait() -> SigSet {
+    let mut signals_to_wait = nix::sys::signal::SigSet::empty();
+    signals_to_wait.add(Signal::SIGWINCH);
+    signals_to_wait.add(Signal::SIGTSTP);
+    signals_to_wait.add(Signal::SIGTERM);
+    signals_to_wait
+}
+
+fn start_signal_thread(sink: mpsc::Sender<Event>) {
+    let _ = std::thread::Builder::new()
+        .name("input".to_owned())
+        .spawn(move || {
+            let signals_to_wait = signals_to_wait();
+            loop {
+                if let Ok(signal) = signals_to_wait.wait() {
+                    sink.blocking_send(Event::Signal(signal)).unwrap();
+                }
+            }
+        });
+}
+
+fn start_keyboard_thread(sink: mpsc::Sender<Event>) {
+    use unsegen::input::Input;
+    let _ = std::thread::Builder::new()
+        .name("input".to_owned())
+        .spawn(move || {
+            let stdin = ::std::io::stdin();
+            let stdin = stdin.lock();
+            for e in Input::read_all(stdin) {
+                sink.blocking_send(Event::Input(e.expect("event"))).unwrap();
+            }
+        });
+}
+
+pub fn init() {
+    signals_to_block().thread_block().unwrap();
+}
+
 pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
     let state = Arc::new(Mutex::new(State {
         rooms: BTreeMap::new(),
@@ -227,7 +272,9 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
         run_matrix_message_fetch_loop(connection_queries, message_query_receiver).await
     });
     //tokio::spawn(async { tui::run_keyboard_loop(sender) });
-    tui::start_keyboard_thread(event_sender);
+
+    start_signal_thread(event_sender.clone());
+    start_keyboard_thread(event_sender);
 
     tui::run_tui(event_receiver, task_sender, message_query_sender, state).await;
 

@@ -124,13 +124,13 @@ struct Config {
     user: String,
 }
 
-#[derive(StructOpt)]
+#[derive(StructOpt, Clone)]
 struct VerifyInitiate {
     #[structopt()]
     device_id: String,
 }
 
-#[derive(StructOpt)]
+#[derive(StructOpt, Clone)]
 enum Command {
     #[structopt(about = "Start the interactive tui client (the default action)")]
     Tui,
@@ -151,8 +151,29 @@ struct Options {
     command: Option<Command>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), matrix_sdk::Error> {
+impl Options {
+    fn command(&self) -> Command {
+        self.command.clone().unwrap_or(Command::Tui)
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let options = Options::from_args();
+
+    // Perform the init before starting any threads. This is important for setup of signal
+    // handling.
+    match options.command() {
+        Command::Tui => tui_app::init(),
+        _ => {}
+    }
+
+    // Then start the async runtime and root task
+    use tokio::runtime::Runtime;
+    let rt = Runtime::new()?;
+    Ok(rt.block_on(tokio_main(options))?)
+}
+
+async fn tokio_main(options: Options) -> Result<(), matrix_sdk::Error> {
     //TODO: remove dirty dirty dirty hack with leak here
     let file = &*Box::leak(Box::new(std::fs::File::create("heyo.log").unwrap()));
     tracing_subscriber::fmt()
@@ -160,14 +181,13 @@ async fn main() -> Result<(), matrix_sdk::Error> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let options = Options::from_args();
-
+    let command = options.command();
     let client = login(options.config).await?;
 
-    match options.command.unwrap_or(Command::Tui) {
+    match command {
         Command::Tui => tui_app::run(client).await,
         Command::Devices => devices::run(client).await,
-        Command::VerifyInitiate(v) => verification_initiate::run(client, v.device_id).await,
+        Command::VerifyInitiate(v) => verification_initiate::run(client, v.device_id.clone()).await,
         Command::VerifyWait => verification_wait::run(client).await,
     }
 }
