@@ -168,8 +168,8 @@ impl TuiEvent<'_> {
                 .unwrap_or(Width::new(0).unwrap()),
         )
     }
-    fn content_size(&self) -> Demand2D {
-        let s = match self.0 {
+    fn content(&self) -> String {
+        match self.0 {
             crate::timeline::Event::Message(e) => match e {
                 AnySyncMessageEvent::RoomMessage(msg) => match &msg.content.msgtype {
                     MessageType::Text(text) => {
@@ -192,8 +192,10 @@ impl TuiEvent<'_> {
             o => {
                 format!("Other event {:?}", o)
             }
-        };
-        s.space_demand()
+        }
+    }
+    fn content_size(&self) -> Demand2D {
+        self.content().space_demand()
     }
 }
 
@@ -219,25 +221,7 @@ impl Widget for TuiEvent<'_> {
         }
         c.set_wrapping_mode(WrappingMode::Wrap);
 
-        match self.0 {
-            crate::timeline::Event::Message(e) => match e {
-                AnySyncMessageEvent::RoomMessage(msg) => match &msg.content.msgtype {
-                    MessageType::Text(text) => c.write(&text.body),
-                    o => {
-                        let _ = write!(c, "Other message {:?}", o);
-                    }
-                },
-                AnySyncMessageEvent::RoomEncrypted(_msg) => {
-                    c.write("*Unable to decrypt message*");
-                }
-                o => {
-                    let _ = write!(c, "Other event {:?}", o);
-                }
-            },
-            o => {
-                let _ = write!(c, "Other event {:?}", o);
-            }
-        }
+        let _ = write!(c, "{}", self.content());
     }
 }
 
