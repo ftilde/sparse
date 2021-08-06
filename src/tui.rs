@@ -148,7 +148,7 @@ impl Scrollable for MessagesMut<'_> {
     }
 }
 
-struct TuiEvent<'a>(&'a crate::timeline::Event);
+struct TuiEvent<'a>(&'a crate::timeline::Event, Width);
 
 impl TuiEvent<'_> {
     fn header(&self) -> Option<String> {
@@ -161,51 +161,45 @@ impl TuiEvent<'_> {
             _o => None,
         }
     }
-    fn header_size(&self) -> ColDemand {
-        ColDemand::exact(
-            self.header()
-                .map(|s| text_width(&s))
-                .unwrap_or(Width::new(0).unwrap()),
-        )
-    }
-    fn content(&self) -> String {
+
+    fn draw_with_cursor<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
+        if let Some(header) = self.header() {
+            c.write(&header);
+            let start = c.get_col();
+            c.set_line_start_column(start);
+        }
+        c.set_wrapping_mode(WrappingMode::Wrap);
+
         match self.0 {
             crate::timeline::Event::Message(e) => match e {
                 AnySyncMessageEvent::RoomMessage(msg) => match &msg.content.msgtype {
-                    MessageType::Text(text) => {
-                        format!("{}: {:?}, {}", msg.sender, msg.event_id, text.body)
-                    }
+                    MessageType::Text(text) => c.write(&text.body),
                     o => {
-                        format!("{}: Other message {:?}", msg.sender, o)
+                        let _ = write!(c, "Other message {:?}", o);
                     }
                 },
-                AnySyncMessageEvent::RoomEncrypted(msg) => {
-                    format!(
-                        "{}: {:?}, *Unable to decrypt message*",
-                        msg.sender, msg.event_id
-                    )
+                AnySyncMessageEvent::RoomEncrypted(_msg) => {
+                    c.write("*Unable to decrypt message*");
                 }
                 o => {
-                    format!("Other event {:?}", o)
+                    let _ = write!(c, "Other event {:?}", o);
                 }
             },
             o => {
-                format!("Other event {:?}", o)
+                let _ = write!(c, "Other event {:?}", o);
             }
         }
-    }
-    fn content_size(&self) -> Demand2D {
-        self.content().space_demand()
     }
 }
 
 impl Widget for TuiEvent<'_> {
     fn space_demand(&self) -> unsegen::widget::Demand2D {
-        let h = self.header_size();
-        let c = self.content_size();
+        let mut est = unsegen::base::window::ExtentEstimationWindow::with_width(self.1);
+        let mut c = Cursor::new(&mut est);
+        self.draw_with_cursor(&mut c);
         Demand2D {
-            width: h + c.width,
-            height: c.height,
+            width: ColDemand::exact(est.extent_x()),
+            height: RowDemand::exact(est.extent_y()),
         }
     }
 
@@ -214,14 +208,7 @@ impl Widget for TuiEvent<'_> {
         window.clear();
 
         let mut c = Cursor::new(&mut window);
-        if let Some(header) = self.header() {
-            c.write(&header);
-            let start = c.get_col();
-            c.set_line_start_column(start);
-        }
-        c.set_wrapping_mode(WrappingMode::Wrap);
-
-        let _ = write!(c, "{}", self.content());
+        self.draw_with_cursor(&mut c);
     }
 }
 
@@ -239,7 +226,7 @@ impl Messages<'_> {
         loop {
             msg = match msg {
                 EventWalkResult::Message(id) => {
-                    let evt = TuiEvent(messages.message(id));
+                    let evt = TuiEvent(messages.message(id), window.get_width());
                     let h = evt.space_demand().height.min;
                     let window_height = window.get_height();
                     let (above, below) = match window.split((window_height - h).from_origin()) {
@@ -302,7 +289,10 @@ impl Messages<'_> {
         loop {
             match msg {
                 EventWalkResult::Message(id) => {
-                    collected_height += TuiEvent(messages.message(id)).space_demand().height.min;
+                    collected_height += TuiEvent(messages.message(id), window.get_width())
+                        .space_demand()
+                        .height
+                        .min;
                     msg = messages.next(id);
                 }
                 EventWalkResult::End => {
@@ -334,7 +324,7 @@ impl Messages<'_> {
         loop {
             msg = match msg {
                 EventWalkResult::Message(id) => {
-                    let evt = TuiEvent(messages.message(id));
+                    let evt = TuiEvent(messages.message(id), window.get_width());
                     let h = evt.space_demand().height.min;
                     let (mut current, below) = match window.split(h.from_origin()) {
                         Ok(pair) => pair,
