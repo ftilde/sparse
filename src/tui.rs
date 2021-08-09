@@ -20,44 +20,107 @@ use nix::sys::signal;
 
 struct Rooms<'a>(&'a State, &'a TuiState);
 
-impl Widget for Rooms<'_> {
-    fn space_demand(&self) -> unsegen::widget::Demand2D {
-        let w = self
-            .0
-            .rooms()
-            .values()
-            .map(|s| text_width(s))
-            .max()
-            .unwrap_or(PositiveAxisDiff::new_unchecked(0));
-        let h = self.0.rooms().len();
-        Demand2D {
-            width: ColDemand::exact(w),
-            height: RowDemand::exact(h),
+impl<'a> Rooms<'a> {
+    fn all_rooms(&self) -> impl Iterator<Item = (RoomId, String)> + 'a {
+        self.0.rooms().iter().map(|(i, r)| (i.clone(), r.clone()))
+    }
+    fn active_rooms(&self) -> Vec<(RoomId, String)> {
+        match &self.1.mode {
+            Mode::RoomFilter(s) => {
+                let s = s.get();
+                let s_lower = s.to_lowercase();
+                let mixed = s != s_lower;
+                let rooms = self.all_rooms();
+                if mixed {
+                    rooms.filter(|(_i, r)| r.contains(s)).collect()
+                } else {
+                    rooms
+                        .filter(|(_i, r)| r.to_lowercase().contains(&s_lower))
+                        .collect()
+                }
+            }
+            _ => self.all_rooms().collect(),
         }
     }
+    fn active_contains_current(&self) -> bool {
+        if let Some(current) = &self.1.current_room {
+            self.active_rooms()
+                .into_iter()
+                .find(|(id, _)| *id == current.id)
+                .is_some()
+        } else {
+            false
+        }
+    }
+}
 
-    fn draw(&self, mut window: Window, _hints: RenderingHints) {
+impl Widget for Rooms<'_> {
+    fn space_demand(&self) -> unsegen::widget::Demand2D {
+        let active = self.active_rooms();
+        let h = active.len();
+        let w = active
+            .into_iter()
+            .map(|(_i, s)| text_width(&s))
+            .max()
+            .unwrap_or(PositiveAxisDiff::new_unchecked(0));
+        let mut d = Demand2D {
+            width: ColDemand::exact(w),
+            height: RowDemand::exact(h),
+        };
+        if let Mode::RoomFilter(s) = &self.1.mode {
+            let ld = s.as_widget().space_demand();
+            d.height += ld.height;
+            d.width = d.width.max(ld.width);
+        }
+        d
+    }
+
+    fn draw(&self, window: Window, hints: RenderingHints) {
+        let mut window = if let Mode::RoomFilter(filter_line) = &self.1.mode {
+            let s = window.get_height() - 1;
+            match window.split(s.from_origin()) {
+                Ok((above, below)) => {
+                    filter_line.as_widget().draw(below, hints);
+                    above
+                }
+                Err(w) => w,
+            }
+        } else {
+            window
+        };
         let mut c = Cursor::new(&mut window);
-        for (id, room) in self.0.rooms().iter() {
+        for (id, room) in self.active_rooms() {
             let mut c = c.save().style_modifier();
-            if Some(id) == self.1.current_room.as_ref().map(|r| &r.id) {
+            if Some(&id) == self.1.current_room.as_ref().map(|r| &r.id) {
                 c.apply_style_modifier(StyleModifier::new().invert(true));
             }
-            c.writeln(room);
+            c.writeln(&room);
         }
     }
 }
 
 struct RoomsMut<'a>(&'a mut State, &'a mut TuiState);
 
+impl RoomsMut<'_> {
+    fn as_rooms<'b>(&'b self) -> Rooms<'b> {
+        Rooms(self.0, self.1)
+    }
+}
 impl Scrollable for RoomsMut<'_> {
     //TODO: we may want wrapping?
     fn scroll_backwards(&mut self) -> OperationResult {
         self.1.current_room = if let Some(current) = self.1.current_room.take() {
-            let mut it = self.0.rooms().range(..current.id.clone()).rev();
+            let mut it = self
+                .as_rooms()
+                .active_rooms()
+                .into_iter()
+                .rev()
+                .skip_while(|(id, _)| id != &current.id);
+            it.next();
             Some(
                 it.next()
-                    .map(|(k, _)| RoomState::at_last_message(k))
+                    .or(self.as_rooms().active_rooms().into_iter().rev().next())
+                    .map(|(k, _)| RoomState::at_last_message(&k))
                     .unwrap_or(current),
             )
         } else {
@@ -73,11 +136,16 @@ impl Scrollable for RoomsMut<'_> {
 
     fn scroll_forwards(&mut self) -> OperationResult {
         self.1.current_room = if let Some(current) = self.1.current_room.take() {
-            let mut it = self.0.rooms().range(current.id.clone()..);
+            let mut it = self
+                .as_rooms()
+                .active_rooms()
+                .into_iter()
+                .skip_while(|(id, _)| id != &current.id);
             it.next();
             Some(
                 it.next()
-                    .map(|(k, _v)| RoomState::at_last_message(k))
+                    .or(self.as_rooms().active_rooms().into_iter().next())
+                    .map(|(k, _)| RoomState::at_last_message(&k))
                     .unwrap_or(current),
             )
         } else {
@@ -393,6 +461,7 @@ impl Widget for Messages<'_> {
 enum Mode {
     LineInsert,
     Normal,
+    RoomFilter(LineEdit),
 }
 
 enum MessageSelection {
@@ -540,10 +609,13 @@ pub async fn run_tui(
                 let input = input.chain((Key::Esc, || tui_state.mode = Mode::Normal));
 
                 let mut state = state.lock().await;
-                match tui_state.mode {
+                match &mut tui_state.mode {
                     Mode::Normal => input
                         .chain((Key::Char('q'), || run = false))
                         .chain((Key::Char('i'), || tui_state.mode = Mode::LineInsert))
+                        .chain((Key::Char('o'), || {
+                            tui_state.mode = Mode::RoomFilter(LineEdit::new())
+                        }))
                         .chain(
                             ScrollBehavior::new(&mut RoomsMut(&mut state, &mut tui_state))
                                 .forwards_on(Key::Char('n'))
@@ -567,6 +639,24 @@ pub async fn run_tui(
                         )
                         .chain((Key::Char('\n'), || {
                             tui_state.send_current_message().map(|t| tasks.add_task(t));
+                        })),
+                    Mode::RoomFilter(lineedit) => input
+                        .chain(
+                            EditBehavior::new(lineedit)
+                                .delete_forwards_on(Key::Delete)
+                                .delete_backwards_on(Key::Backspace),
+                        )
+                        .chain(
+                            ScrollBehavior::new(&mut RoomsMut(&mut state, &mut tui_state))
+                                .forwards_on(Key::Ctrl('n'))
+                                .backwards_on(Key::Ctrl('p')),
+                        )
+                        .chain((Key::Char('\n'), || {
+                            let mut r = RoomsMut(&mut state, &mut tui_state);
+                            if !r.as_rooms().active_contains_current() {
+                                let _ = r.scroll_forwards(); // Select first
+                            }
+                            tui_state.mode = Mode::Normal;
                         })),
                 };
             }
