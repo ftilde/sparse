@@ -390,6 +390,11 @@ impl Widget for Messages<'_> {
     }
 }
 
+enum Mode {
+    LineInsert,
+    Normal,
+}
+
 enum MessageSelection {
     Newest,
     Specific(EventId),
@@ -412,6 +417,20 @@ impl RoomState {
 struct TuiState {
     msg_edit: PromptLine,
     current_room: Option<RoomState>,
+    mode: Mode,
+}
+
+impl TuiState {
+    fn send_current_message(&mut self) -> Option<Task> {
+        if let Some(room) = &self.current_room {
+            let msg = self.msg_edit.get().to_owned();
+            if !msg.is_empty() {
+                self.msg_edit.clear().unwrap();
+                return Some(Task::Send(room.id.clone(), msg));
+            }
+        }
+        None
+    }
 }
 
 fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl Widget + 'a {
@@ -422,7 +441,9 @@ fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl 
             VLayout::new()
                 .separator(GraphemeCluster::try_from('-').unwrap())
                 .widget(Messages(state, tui_state, tasks))
-                .widget(tui_state.msg_edit.as_widget()),
+                .widget(tui_state.msg_edit.as_widget().with_hints(move |h| {
+                    h.active(h.active && matches!(tui_state.mode, Mode::LineInsert))
+                })),
             1.0,
         )
 }
@@ -467,6 +488,7 @@ pub async fn run_tui(
         TuiState {
             msg_edit: PromptLine::with_prompt(" > ".to_owned()),
             current_room,
+            mode: Mode::Normal,
         }
     };
 
@@ -515,35 +537,38 @@ pub async fn run_tui(
                     unsegen_signals::SignalBehavior::new().on_default::<unsegen_signals::SIGTSTP>();
                 let input = input.chain(sig_behavior);
 
+                let input = input.chain((Key::Esc, || tui_state.mode = Mode::Normal));
+
                 let mut state = state.lock().await;
-                input
-                    .chain((Key::Ctrl('q'), || run = false))
-                    .chain(
-                        ScrollBehavior::new(&mut RoomsMut(&mut state, &mut tui_state))
-                            .forwards_on(Key::Ctrl('n'))
-                            .backwards_on(Key::Ctrl('p')),
-                    )
-                    .chain(
-                        ScrollBehavior::new(&mut MessagesMut(&state, &mut tui_state))
-                            .forwards_on(Key::Down)
-                            .backwards_on(Key::Up)
-                            .to_end_on(Key::Ctrl('g')),
-                    )
-                    .chain(
-                        EditBehavior::new(&mut tui_state.msg_edit)
-                            .delete_forwards_on(Key::Delete)
-                            .delete_backwards_on(Key::Backspace)
-                            .clear_on(Key::Ctrl('c')),
-                    )
-                    .chain((Key::Char('\n'), || {
-                        if let Some(room) = &tui_state.current_room {
-                            let msg = tui_state.msg_edit.get().to_owned();
-                            if !msg.is_empty() {
-                                tasks.add_task(Task::Send(room.id.clone(), msg));
-                                tui_state.msg_edit.clear().unwrap();
-                            }
-                        }
-                    }));
+                match tui_state.mode {
+                    Mode::Normal => input
+                        .chain((Key::Char('q'), || run = false))
+                        .chain((Key::Char('i'), || tui_state.mode = Mode::LineInsert))
+                        .chain(
+                            ScrollBehavior::new(&mut RoomsMut(&mut state, &mut tui_state))
+                                .forwards_on(Key::Char('n'))
+                                .backwards_on(Key::Char('p')),
+                        )
+                        .chain(
+                            ScrollBehavior::new(&mut MessagesMut(&state, &mut tui_state))
+                                .forwards_on(Key::Char('j'))
+                                .backwards_on(Key::Char('k'))
+                                .to_end_on(Key::Ctrl('g')),
+                        )
+                        .chain((Key::Char('\n'), || {
+                            tui_state.send_current_message().map(|t| tasks.add_task(t));
+                        })),
+                    Mode::LineInsert => input
+                        .chain(
+                            EditBehavior::new(&mut tui_state.msg_edit)
+                                .delete_forwards_on(Key::Delete)
+                                .delete_backwards_on(Key::Backspace)
+                                .clear_on(Key::Ctrl('c')),
+                        )
+                        .chain((Key::Char('\n'), || {
+                            tui_state.send_current_message().map(|t| tasks.add_task(t));
+                        })),
+                };
             }
         }
     }
