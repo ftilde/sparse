@@ -18,6 +18,8 @@ use crate::tui_app::State;
 
 use nix::sys::signal;
 
+const DRAW_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(16);
+
 struct Rooms<'a>(&'a State, &'a TuiState);
 
 impl<'a> Rooms<'a> {
@@ -589,76 +591,94 @@ pub async fn run_tui(
             }
         }
 
-        match events.recv().await.unwrap() {
-            Event::Update => {}
-            Event::Signal(signal::Signal::SIGWINCH) => { /* Just redraw the window */ }
-            Event::Signal(signal::Signal::SIGTSTP) => {
-                if let Err(e) = term.handle_sigtstp() {
-                    tracing::warn!("Unable to handle SIGTSTP: {}", e);
+        let mut first = true;
+        loop {
+            let event: Option<Event> = if first {
+                first = false;
+                events.recv().await
+            } else {
+                if let Ok(event) = tokio::time::timeout_at(
+                    tokio::time::Instant::now() + DRAW_TIMEOUT,
+                    events.recv(),
+                )
+                .await
+                {
+                    event
+                } else {
+                    break;
                 }
-            }
-            Event::Signal(signal::Signal::SIGTERM) => run = false,
-            Event::Signal(s) => {
-                tracing::warn!("Unhandled signal {}", s);
-            }
-            Event::Input(input) => {
-                let sig_behavior =
-                    unsegen_signals::SignalBehavior::new().on_default::<unsegen_signals::SIGTSTP>();
-                let input = input.chain(sig_behavior);
+            };
+            match event.unwrap() {
+                Event::Update => {}
+                Event::Signal(signal::Signal::SIGWINCH) => { /* Just redraw the window */ }
+                Event::Signal(signal::Signal::SIGTSTP) => {
+                    if let Err(e) = term.handle_sigtstp() {
+                        tracing::warn!("Unable to handle SIGTSTP: {}", e);
+                    }
+                }
+                Event::Signal(signal::Signal::SIGTERM) => run = false,
+                Event::Signal(s) => {
+                    tracing::warn!("Unhandled signal {}", s);
+                }
+                Event::Input(input) => {
+                    let sig_behavior = unsegen_signals::SignalBehavior::new()
+                        .on_default::<unsegen_signals::SIGTSTP>();
+                    let input = input.chain(sig_behavior);
 
-                let input = input.chain((Key::Esc, || tui_state.mode = Mode::Normal));
+                    let input = input.chain((Key::Esc, || tui_state.mode = Mode::Normal));
 
-                let mut state = state.lock().await;
-                match &mut tui_state.mode {
-                    Mode::Normal => input
-                        .chain((Key::Char('q'), || run = false))
-                        .chain((Key::Char('i'), || tui_state.mode = Mode::LineInsert))
-                        .chain((Key::Char('o'), || {
-                            tui_state.mode = Mode::RoomFilter(LineEdit::new())
-                        }))
-                        .chain(
-                            ScrollBehavior::new(&mut RoomsMut(&mut state, &mut tui_state))
-                                .forwards_on(Key::Char('n'))
-                                .backwards_on(Key::Char('p')),
-                        )
-                        .chain(
-                            ScrollBehavior::new(&mut MessagesMut(&state, &mut tui_state))
-                                .forwards_on(Key::Char('j'))
-                                .backwards_on(Key::Char('k'))
-                                .to_end_on(Key::Ctrl('g')),
-                        )
-                        .chain((Key::Char('\n'), || {
-                            tui_state.send_current_message().map(|t| tasks.add_task(t));
-                        })),
-                    Mode::LineInsert => input
-                        .chain(
-                            EditBehavior::new(&mut tui_state.msg_edit)
-                                .delete_forwards_on(Key::Delete)
-                                .delete_backwards_on(Key::Backspace)
-                                .clear_on(Key::Ctrl('c')),
-                        )
-                        .chain((Key::Char('\n'), || {
-                            tui_state.send_current_message().map(|t| tasks.add_task(t));
-                        })),
-                    Mode::RoomFilter(lineedit) => input
-                        .chain(
-                            EditBehavior::new(lineedit)
-                                .delete_forwards_on(Key::Delete)
-                                .delete_backwards_on(Key::Backspace),
-                        )
-                        .chain(
-                            ScrollBehavior::new(&mut RoomsMut(&mut state, &mut tui_state))
-                                .forwards_on(Key::Ctrl('n'))
-                                .backwards_on(Key::Ctrl('p')),
-                        )
-                        .chain((Key::Char('\n'), || {
-                            let mut r = RoomsMut(&mut state, &mut tui_state);
-                            if !r.as_rooms().active_contains_current() {
-                                let _ = r.scroll_forwards(); // Select first
-                            }
-                            tui_state.mode = Mode::Normal;
-                        })),
-                };
+                    let mut state = state.lock().await;
+                    match &mut tui_state.mode {
+                        Mode::Normal => input
+                            .chain((Key::Char('q'), || run = false))
+                            .chain((Key::Char('i'), || tui_state.mode = Mode::LineInsert))
+                            .chain((Key::Char('o'), || {
+                                tui_state.mode = Mode::RoomFilter(LineEdit::new())
+                            }))
+                            .chain(
+                                ScrollBehavior::new(&mut RoomsMut(&mut state, &mut tui_state))
+                                    .forwards_on(Key::Char('n'))
+                                    .backwards_on(Key::Char('p')),
+                            )
+                            .chain(
+                                ScrollBehavior::new(&mut MessagesMut(&state, &mut tui_state))
+                                    .forwards_on(Key::Char('j'))
+                                    .backwards_on(Key::Char('k'))
+                                    .to_end_on(Key::Ctrl('g')),
+                            )
+                            .chain((Key::Char('\n'), || {
+                                tui_state.send_current_message().map(|t| tasks.add_task(t));
+                            })),
+                        Mode::LineInsert => input
+                            .chain(
+                                EditBehavior::new(&mut tui_state.msg_edit)
+                                    .delete_forwards_on(Key::Delete)
+                                    .delete_backwards_on(Key::Backspace)
+                                    .clear_on(Key::Ctrl('c')),
+                            )
+                            .chain((Key::Char('\n'), || {
+                                tui_state.send_current_message().map(|t| tasks.add_task(t));
+                            })),
+                        Mode::RoomFilter(lineedit) => input
+                            .chain(
+                                EditBehavior::new(lineedit)
+                                    .delete_forwards_on(Key::Delete)
+                                    .delete_backwards_on(Key::Backspace),
+                            )
+                            .chain(
+                                ScrollBehavior::new(&mut RoomsMut(&mut state, &mut tui_state))
+                                    .forwards_on(Key::Ctrl('n'))
+                                    .backwards_on(Key::Ctrl('p')),
+                            )
+                            .chain((Key::Char('\n'), || {
+                                let mut r = RoomsMut(&mut state, &mut tui_state);
+                                if !r.as_rooms().active_contains_current() {
+                                    let _ = r.scroll_forwards(); // Select first
+                                }
+                                tui_state.mode = Mode::Normal;
+                            })),
+                    };
+                }
             }
         }
     }
