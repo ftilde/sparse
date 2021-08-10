@@ -200,18 +200,9 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
         messages: BTreeMap::new(),
     }));
 
-    let (event_sender, event_receiver) = mpsc::channel(1);
-    let (task_sender, task_receiver) = mpsc::channel(1);
-    let (message_query_sender, message_query_receiver) = watch::channel(None);
-
-    let connection = Connection {
-        client: client.clone(),
-        state: state.clone(),
-        events: Arc::new(Mutex::new(event_sender.clone())),
-    };
-
-    client.set_event_handler(Box::new(connection.clone())).await;
-
+    // Fetch the initial list of rooms. This is required (for some reason) because joined_rooms()
+    // returns an empty vec on the first start for some reason.
+    client.sync_once(SyncSettings::new()).await?;
     let mut rooms = BTreeMap::new();
     for room in client.joined_rooms() {
         let id = room.room_id();
@@ -223,6 +214,18 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
         let mut state = state.lock().await;
         state.rooms = rooms;
     }
+
+    let (event_sender, event_receiver) = mpsc::channel(1);
+    let (task_sender, task_receiver) = mpsc::channel(1);
+    let (message_query_sender, message_query_receiver) = watch::channel(None);
+
+    let connection = Connection {
+        client: client.clone(),
+        state: state.clone(),
+        events: Arc::new(Mutex::new(event_sender.clone())),
+    };
+
+    client.set_event_handler(Box::new(connection.clone())).await;
 
     let orig_attr = std::sync::Mutex::new(
         nix::sys::termios::tcgetattr(STDOUT).expect("Failed to get terminal attributes"),
