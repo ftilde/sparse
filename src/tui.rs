@@ -19,6 +19,11 @@ use crate::tui_app::State;
 use nix::sys::signal;
 
 const DRAW_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(16);
+macro_rules! message_fetch_symbol {
+    () => {
+        "[...]"
+    };
+}
 
 struct Rooms<'a>(&'a State, &'a TuiState);
 
@@ -317,7 +322,7 @@ impl Messages<'_> {
                 }
                 EventWalkResult::RequiresFetchFrom(_tok) => {
                     let mut c = Cursor::new(&mut window);
-                    write!(&mut c, "[...]").unwrap();
+                    write!(&mut c, message_fetch_symbol!()).unwrap();
                     self.2
                         .set_message_query(room.id.clone(), MessageQuery::BeforeCache);
                     break;
@@ -336,7 +341,6 @@ impl Messages<'_> {
             EventWalkResultNewest::Message(m) => m,
             EventWalkResultNewest::End => return,
             EventWalkResultNewest::RequiresFetch(latest) => {
-                tracing::warn!("fetch newest");
                 self.2
                     .set_message_query(room.id.clone(), MessageQuery::Newest);
 
@@ -346,7 +350,7 @@ impl Messages<'_> {
                     Err(below) => (None, below),
                 };
                 let mut c = Cursor::new(&mut below);
-                write!(&mut c, "[...]").unwrap();
+                write!(&mut c, message_fetch_symbol!()).unwrap();
 
                 if let Some(above) = above {
                     window = above;
@@ -442,7 +446,7 @@ impl Messages<'_> {
                 }
                 EventWalkResult::RequiresFetchFrom(_tok) => {
                     let mut c = Cursor::new(&mut window);
-                    write!(&mut c, "[...]").unwrap();
+                    write!(&mut c, message_fetch_symbol!()).unwrap();
                     self.2
                         .set_message_query(room.id.clone(), MessageQuery::AfterCache);
                     break;
@@ -471,7 +475,7 @@ impl Widget for Messages<'_> {
                 }
             } else {
                 let mut c = Cursor::new(&mut window);
-                write!(&mut c, "[...]").unwrap();
+                write!(&mut c, message_fetch_symbol!()).unwrap();
                 let query = match &room.current_message {
                     MessageSelection::Newest => MessageQuery::Newest,
                     MessageSelection::Specific(_id) => MessageQuery::BeforeCache,
