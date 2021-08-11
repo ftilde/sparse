@@ -475,6 +475,7 @@ impl Widget for Messages<'_> {
                 }
             } else {
                 let mut c = Cursor::new(&mut window);
+                c.move_to_bottom();
                 write!(&mut c, message_fetch_symbol!()).unwrap();
                 let query = match &room.current_message {
                     MessageSelection::Newest => MessageQuery::Newest,
