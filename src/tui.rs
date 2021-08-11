@@ -332,19 +332,41 @@ impl Messages<'_> {
         room: &RoomState,
         messages: &RoomTimelineCache,
     ) {
-        let msg = match messages.walk_from_newest() {
-            EventWalkResultNewest::Message(m) => EventWalkResult::Message(m),
+        let msg_id = match messages.walk_from_newest() {
+            EventWalkResultNewest::Message(m) => m,
             EventWalkResultNewest::End => return,
-            EventWalkResultNewest::RequiresFetch => {
+            EventWalkResultNewest::RequiresFetch(latest) => {
                 tracing::warn!("fetch newest");
-                let mut c = Cursor::new(&mut window);
-                write!(&mut c, "[...]").unwrap();
                 self.2
                     .set_message_query(room.id.clone(), MessageQuery::Newest);
-                return;
+
+                let split = (window.get_height() - 1).from_origin();
+                let (above, mut below) = match window.split(split) {
+                    Ok((above, below)) => (Some(above), below),
+                    Err(below) => (None, below),
+                };
+                let mut c = Cursor::new(&mut below);
+                write!(&mut c, "[...]").unwrap();
+
+                if let Some(above) = above {
+                    window = above;
+                } else {
+                    return;
+                }
+                if let Some(latest) = latest {
+                    latest
+                } else {
+                    return;
+                }
             }
         };
-        self.draw_up_from(window, hints, msg, room, messages);
+        self.draw_up_from(
+            window,
+            hints,
+            EventWalkResult::Message(msg_id),
+            room,
+            messages,
+        );
     }
     fn draw_selected(
         &self,

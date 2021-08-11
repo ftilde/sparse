@@ -48,7 +48,7 @@ impl<'a> EventWalkResult<'a> {
 #[derive(Debug)]
 pub enum EventWalkResultNewest<'a> {
     Message(RoomTimelineIndex<'a>),
-    RequiresFetch,
+    RequiresFetch(Option<RoomTimelineIndex<'a>>), //There may be newer events, but this is the newest we got
     End,
 }
 
@@ -126,7 +126,12 @@ impl RoomTimelineCache {
                     EventWalkResultNewest::End
                 }
             }
-            CacheEndState::Open => EventWalkResultNewest::RequiresFetch,
+            CacheEndState::Open => EventWalkResultNewest::RequiresFetch(
+                self.messages
+                    .len()
+                    .checked_sub(1)
+                    .map(RoomTimelineIndex::new),
+            ),
         }
     }
 
