@@ -9,7 +9,7 @@ use matrix_sdk::{
         },
         AnyMessageEventContent, SyncMessageEvent, SyncStateEvent,
     },
-    ruma::identifiers::RoomId,
+    ruma::identifiers::{EventId, RoomId},
     Client, EventHandler, SyncSettings,
 };
 
@@ -22,18 +22,24 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 use tui::Event;
 
-pub struct State {
-    messages: BTreeMap<RoomId, timeline::RoomTimelineCache>,
-    rooms: BTreeMap<RoomId, String>,
+pub struct RoomState {
+    pub messages: timeline::RoomTimelineCache,
+    pub name: String,
+    pub read_message: Option<EventId>,
 }
 
-impl State {
-    pub fn rooms(&self) -> &BTreeMap<RoomId, String> {
-        &self.rooms
+impl RoomState {
+    fn new(display_name: String) -> Self {
+        RoomState {
+            messages: timeline::RoomTimelineCache::default(),
+            name: display_name,
+            read_message: None,
+        }
     }
-    pub fn messages(&self) -> &BTreeMap<RoomId, timeline::RoomTimelineCache> {
-        &self.messages
-    }
+}
+
+pub struct State {
+    pub rooms: BTreeMap<RoomId, RoomState>,
 }
 
 async fn run_matrix_event_loop(connection: Connection) {
@@ -68,7 +74,9 @@ impl Connection {
         let mut state = self.state.lock().await;
         match room {
             Room::Joined(room) => {
-                state.rooms.insert(room.room_id().clone(), display_name);
+                state
+                    .rooms
+                    .insert(room.room_id().clone(), RoomState::new(display_name));
             }
             Room::Left(room) => {
                 state.rooms.remove(room.room_id());
@@ -84,7 +92,7 @@ impl EventHandler for Connection {
     async fn on_room_message(&self, room: Room, _event: &SyncMessageEvent<MessageEventContent>) {
         //self.add_room_message(&room, event).await;
         let mut state = self.state.lock().await;
-        let m = state.messages.entry(room.room_id().clone()).or_default();
+        let m = &mut state.rooms.get_mut(&room.room_id()).unwrap().messages;
         m.notify_new_messages();
         self.update().await;
     }
@@ -117,7 +125,14 @@ async fn run_matrix_task_loop(c: Connection, mut tasks: mpsc::Receiver<tui::Task
                         AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(msg));
                     room.send(content, None).await.unwrap();
                 } else {
-                    panic!("can't send message, no joined room"); //TODO: we probably want to log something
+                    tracing::error!("can't send message, no joined room");
+                }
+            }
+            tui::Task::ReadReceipt(room_id, event_id) => {
+                if let Some(room) = c.client.get_joined_room(&room_id) {
+                    room.read_receipt(&event_id).await.unwrap();
+                } else {
+                    tracing::error!("can't send read receipt, no joined room");
                 }
             }
         }
@@ -135,17 +150,17 @@ async fn run_matrix_message_fetch_loop(
             let room = c.client.get_room(rid).unwrap();
 
             let query = {
-                let mut state = c.state.lock().await;
-                let m = state.messages.entry(rid.clone()).or_default();
+                let state = c.state.lock().await;
+                let m = state.rooms.get(&rid).unwrap();
 
-                m.events_query(room, task.kind)
+                m.messages.events_query(room, task.kind)
             };
 
             let res = query.await.unwrap();
 
             let mut state = c.state.lock().await;
-            let m = state.messages.get_mut(rid).unwrap();
-            m.update(res);
+            let m = state.rooms.get_mut(rid).unwrap();
+            m.messages.update(res);
             c.update().await;
         }
     }
@@ -197,7 +212,6 @@ pub fn init() {
 pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
     let state = Arc::new(Mutex::new(State {
         rooms: BTreeMap::new(),
-        messages: BTreeMap::new(),
     }));
 
     // Fetch the initial list of rooms. This is required (for some reason) because joined_rooms()
@@ -207,7 +221,8 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
     for room in client.joined_rooms() {
         let id = room.room_id();
         if let Some(room) = client.get_room(id) {
-            rooms.insert(id.clone(), room.display_name().await.unwrap());
+            let name = room.display_name().await.unwrap();
+            rooms.insert(id.clone(), RoomState::new(name));
         }
     }
     {

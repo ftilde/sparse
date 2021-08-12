@@ -29,7 +29,10 @@ struct Rooms<'a>(&'a State, &'a TuiState);
 
 impl<'a> Rooms<'a> {
     fn all_rooms(&self) -> impl Iterator<Item = (RoomId, String)> + 'a {
-        self.0.rooms().iter().map(|(i, r)| (i.clone(), r.clone()))
+        self.0
+            .rooms
+            .iter()
+            .map(|(i, r)| (i.clone(), r.name.clone()))
     }
     fn active_rooms(&self) -> Vec<(RoomId, String)> {
         match &self.1.mode {
@@ -114,7 +117,6 @@ impl RoomsMut<'_> {
     }
 }
 impl Scrollable for RoomsMut<'_> {
-    //TODO: we may want wrapping?
     fn scroll_backwards(&mut self) -> OperationResult {
         self.1.current_room = if let Some(current) = self.1.current_room.take() {
             let mut it = self
@@ -132,7 +134,7 @@ impl Scrollable for RoomsMut<'_> {
             )
         } else {
             self.0
-                .rooms()
+                .rooms
                 .keys()
                 .rev()
                 .next()
@@ -156,7 +158,7 @@ impl Scrollable for RoomsMut<'_> {
                     .unwrap_or(current),
             )
         } else {
-            self.0.rooms().keys().next().map(RoomState::at_last_message)
+            self.0.rooms.keys().next().map(RoomState::at_last_message)
         };
         Ok(())
     }
@@ -184,7 +186,7 @@ struct MessagesMut<'a>(&'a State, &'a mut TuiState);
 impl Scrollable for MessagesMut<'_> {
     fn scroll_backwards(&mut self) -> OperationResult {
         let mut room = self.1.current_room.as_mut().ok_or(())?;
-        let messages = self.0.messages().get(&room.id).ok_or(())?;
+        let messages = &self.0.rooms.get(&room.id).ok_or(())?.messages;
         let pos = match &room.current_message {
             MessageSelection::Newest => messages.walk_from_newest().message(),
             MessageSelection::Specific(id) => {
@@ -199,7 +201,7 @@ impl Scrollable for MessagesMut<'_> {
 
     fn scroll_forwards(&mut self) -> OperationResult {
         let mut room = self.1.current_room.as_mut().ok_or(())?;
-        let messages = self.0.messages().get(&room.id).ok_or(())?;
+        let messages = &self.0.rooms.get(&room.id).ok_or(())?.messages;
         let pos = match &room.current_message {
             MessageSelection::Newest => return Err(()),
             MessageSelection::Specific(id) => messages.walk_from_known(&id).message(),
@@ -466,7 +468,8 @@ impl Widget for Messages<'_> {
 
     fn draw(&self, mut window: Window, hints: RenderingHints) {
         if let Some(room) = self.1.current_room.as_ref() {
-            if let Some(messages) = self.0.messages().get(&room.id) {
+            if let Some(state) = self.0.rooms.get(&room.id) {
+                let messages = &state.messages;
                 match &room.current_message {
                     MessageSelection::Newest => self.draw_newest(window, hints, room, messages),
                     MessageSelection::Specific(id) => {
@@ -556,6 +559,7 @@ pub enum Event {
 #[derive(Debug)]
 pub enum Task {
     Send(RoomId, String),
+    ReadReceipt(RoomId, EventId),
 }
 
 #[derive(Clone)]
@@ -575,7 +579,7 @@ pub async fn run_tui(
     let mut tui_state = {
         let state = state.lock().await;
 
-        let current_room = if let Some(id) = state.rooms().keys().next() {
+        let current_room = if let Some(id) = state.rooms.keys().next() {
             Some(RoomState {
                 id: id.clone(),
                 current_message: MessageSelection::Newest,
