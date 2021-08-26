@@ -709,6 +709,14 @@ pub async fn run_tui(
                                 tui_state.mode = Mode::Normal;
                             })),
                     };
+
+                    if let Some(r) = &tui_state.current_room {
+                        if let Some(room) = state.rooms.get_mut(&r.id) {
+                            if let Some(read_event_id) = room.mark_newest_event_as_read() {
+                                tasks.add_task(Task::ReadReceipt(r.id.clone(), read_event_id));
+                            }
+                        }
+                    }
                 }
             }
         }

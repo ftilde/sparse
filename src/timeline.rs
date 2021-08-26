@@ -78,10 +78,10 @@ impl RoomTimelineIndex<'_> {
 }
 
 impl RoomTimelineCache {
-    fn begin(&self) -> Option<&EventId> {
+    pub fn begin(&self) -> Option<&EventId> {
         self.messages.front().map(|m| m.event_id())
     }
-    fn end(&self) -> Option<&EventId> {
+    pub fn end(&self) -> Option<&EventId> {
         self.messages.back().map(|m| m.event_id())
     }
 

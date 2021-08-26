@@ -25,15 +25,26 @@ use tui::Event;
 pub struct RoomState {
     pub messages: timeline::RoomTimelineCache,
     pub name: String,
-    pub read_message: Option<EventId>,
+    latest_read_message: Option<EventId>,
 }
 
 impl RoomState {
-    fn new(display_name: String) -> Self {
+    async fn from_room(room: &Room) -> Self {
+        let name = room.display_name().await.unwrap();
         RoomState {
             messages: timeline::RoomTimelineCache::default(),
-            name: display_name,
-            read_message: None,
+            name,
+            latest_read_message: None,
+        }
+    }
+
+    pub fn mark_newest_event_as_read(&mut self) -> Option<EventId> {
+        let latest = self.messages.end().cloned();
+        if latest.is_some() && self.latest_read_message != latest {
+            self.latest_read_message = latest;
+            self.latest_read_message.clone()
+        } else {
+            None
         }
     }
 }
@@ -70,13 +81,16 @@ impl Connection {
         }
     }
     async fn update_room_info(&self, room: Room) {
-        let display_name = room.display_name().await.unwrap();
         let mut state = self.state.lock().await;
         match room {
-            Room::Joined(room) => {
-                state
-                    .rooms
-                    .insert(room.room_id().clone(), RoomState::new(display_name));
+            Room::Joined(_) => {
+                if let Some(r) = state.rooms.get_mut(room.room_id()) {
+                    r.name = room.display_name().await.unwrap();
+                } else {
+                    state
+                        .rooms
+                        .insert(room.room_id().clone(), RoomState::from_room(&room).await);
+                }
             }
             Room::Left(room) => {
                 state.rooms.remove(room.room_id());
@@ -221,8 +235,7 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
     for room in client.joined_rooms() {
         let id = room.room_id();
         if let Some(room) = client.get_room(id) {
-            let name = room.display_name().await.unwrap();
-            rooms.insert(id.clone(), RoomState::new(name));
+            rooms.insert(id.clone(), RoomState::from_room(&room).await);
         }
     }
     {
