@@ -132,7 +132,7 @@ impl EventHandler for Connection {
     }
     /// Fires when `Client` receives room events that trigger notifications
     /// according to the push rules of the user.
-    async fn on_room_notification(&self, _room: Room, notification: Notification) {
+    async fn on_room_notification(&self, room: Room, notification: Notification) {
         if notification
             .actions
             .iter()
@@ -141,7 +141,17 @@ impl EventHandler for Connection {
             match notification.event.deserialize() {
                 Ok(e) => {
                     let mut notification = notify_rust::Notification::new();
-                    notification.summary(e.sender().as_str());
+                    if room.is_direct() {
+                        notification.summary(e.sender().as_str());
+                    } else {
+                        notification.summary(&format!(
+                            "{} in {}",
+                            e.sender().as_str(),
+                            room.display_name()
+                                .await
+                                .unwrap_or_else(|_| "Unknown room".to_owned())
+                        ));
+                    }
                     match e {
                         AnySyncRoomEvent::Message(m) => match m {
                             AnySyncMessageEvent::RoomMessage(m) => match m.content.msgtype {
