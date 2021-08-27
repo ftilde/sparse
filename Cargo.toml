@@ -30,6 +30,7 @@ nix = "0.17"
 backtrace = "0.3"
 structopt = "0.3"
 hostname = "0.3"
+notify-rust = "4.5"
 
 [dependencies.matrix-sdk]
 #git = "https://github.com/matrix-org/matrix-rust-sdk"

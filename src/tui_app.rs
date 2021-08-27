@@ -1,13 +1,15 @@
 use matrix_sdk::{
     self, async_trait,
     room::Room,
+    ruma::api::client::r0::push::get_notifications::Notification,
     ruma::events::{
-        room::message::MessageEventContent,
+        room::message::{MessageEventContent, MessageType},
         room::{
             aliases::AliasesEventContent, canonical_alias::CanonicalAliasEventContent,
             member::MemberEventContent, name::NameEventContent,
         },
-        AnyMessageEventContent, SyncMessageEvent, SyncStateEvent,
+        AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent, SyncMessageEvent,
+        SyncStateEvent,
     },
     ruma::identifiers::{EventId, RoomId},
     Client, EventHandler, SyncSettings,
@@ -127,6 +129,42 @@ impl EventHandler for Connection {
     /// Fires when `Client` receives a `RoomEvent::RoomAliases` event.
     async fn on_room_aliases(&self, room: Room, _: &SyncStateEvent<AliasesEventContent>) {
         self.update_room_info(room).await
+    }
+    /// Fires when `Client` receives room events that trigger notifications
+    /// according to the push rules of the user.
+    async fn on_room_notification(&self, _room: Room, notification: Notification) {
+        if notification
+            .actions
+            .iter()
+            .any(|t| matches!(t, matrix_sdk::ruma::push::Action::Notify))
+        {
+            match notification.event.deserialize() {
+                Ok(e) => {
+                    let mut notification = notify_rust::Notification::new();
+                    notification.summary(e.sender().as_str());
+                    match e {
+                        AnySyncRoomEvent::Message(m) => match m {
+                            AnySyncMessageEvent::RoomMessage(m) => match m.content.msgtype {
+                                MessageType::Text(t) => {
+                                    notification.body(&t.body);
+                                }
+                                o => {
+                                    notification.body(&format!("{:?}", o));
+                                }
+                            },
+                            o => {
+                                notification.body(&format!("{:?}", o));
+                            }
+                        },
+                        _ => {}
+                    }
+                    if let Err(e) = notification.show() {
+                        tracing::error!("Failed to show notification {}", e);
+                    }
+                }
+                Err(e) => tracing::error!("can't deserialize event from notification: {:?}", e),
+            }
+        }
     }
 }
 
