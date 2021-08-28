@@ -33,10 +33,15 @@ pub struct RoomState {
 impl RoomState {
     async fn from_room(room: &Room) -> Self {
         let name = room.display_name().await.unwrap();
+        let latest_read_message = room
+            .user_read_receipt(room.own_user_id())
+            .await
+            .unwrap()
+            .map(|(id, _)| id);
         RoomState {
             messages: timeline::RoomTimelineCache::default(),
             name,
-            latest_read_message: None,
+            latest_read_message,
         }
     }
 
