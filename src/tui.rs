@@ -31,26 +31,26 @@ struct Rooms<'a>(&'a State, &'a TuiState);
 impl<'a> Rooms<'a> {
     fn all_rooms<'r>(
         self,
-    ) -> impl Iterator<Item = (&'a RoomId, &'a crate::tui_app::RoomState)> + 'a {
+    ) -> impl DoubleEndedIterator<Item = (&'a RoomId, &'a crate::tui_app::RoomState)> + 'a {
         self.0.rooms.iter()
     }
-    fn active_rooms(self) -> Vec<(&'a RoomId, &'a crate::tui_app::RoomState)> {
-        match &self.1.mode {
-            Mode::RoomFilter(s) => {
-                let s = s.get();
-                let s_lower = s.to_lowercase();
-                let mixed = s != s_lower;
-                let rooms = self.all_rooms();
-                if mixed {
-                    rooms.filter(|(_i, r)| r.name().contains(s)).collect()
-                } else {
-                    rooms
-                        .filter(|(_i, r)| r.name().to_lowercase().contains(&s_lower))
-                        .collect()
-                }
-            }
-            _ => self.all_rooms().collect(),
-        }
+    fn active_rooms(
+        self,
+    ) -> impl DoubleEndedIterator<Item = (&'a RoomId, &'a crate::tui_app::RoomState)> {
+        let s = self.1.mode.room_filter_string();
+        let s_lower = s.to_lowercase();
+        let mixed = s != s_lower;
+        let rooms = self.all_rooms();
+        let only_with_unread = matches!(self.1.mode, Mode::RoomFilterUnread(_));
+        rooms.filter(move |(_i, r)| {
+            let passes_filter_string = if mixed {
+                r.name().contains(s)
+            } else {
+                r.name().to_lowercase().contains(&s_lower)
+            };
+            let passes_unread_filter = !(only_with_unread && !r.has_unread());
+            passes_filter_string && passes_unread_filter
+        })
     }
     fn active_contains_current(&self) -> bool {
         if let Some(current) = &self.1.current_room {
@@ -65,7 +65,7 @@ impl<'a> Rooms<'a> {
     fn as_widget(self) -> impl Widget + 'a {
         let mut layout = VLayout::new();
 
-        if let Mode::RoomFilter(filter_line) = &self.1.mode {
+        if let Mode::RoomFilter(filter_line) | Mode::RoomFilterUnread(filter_line) = &self.1.mode {
             layout = layout.widget(HLayout::new().widget("# ").widget(filter_line.as_widget()));
         };
         for (id, r) in self.active_rooms().into_iter() {
@@ -502,6 +502,16 @@ enum Mode {
     LineInsert,
     Normal,
     RoomFilter(LineEdit),
+    RoomFilterUnread(LineEdit),
+}
+
+impl Mode {
+    fn room_filter_string(&self) -> &str {
+        match self {
+            Mode::RoomFilter(l) | Mode::RoomFilterUnread(l) => l.get(),
+            _ => "",
+        }
+    }
 }
 
 enum MessageSelection {
@@ -674,6 +684,9 @@ pub async fn run_tui(
                             .chain((Key::Char('o'), || {
                                 tui_state.mode = Mode::RoomFilter(LineEdit::new())
                             }))
+                            .chain((Key::Char('O'), || {
+                                tui_state.mode = Mode::RoomFilterUnread(LineEdit::new())
+                            }))
                             .chain(
                                 ScrollBehavior::new(&mut RoomsMut(&mut state, &mut tui_state))
                                     .forwards_on(Key::Char('n'))
@@ -698,7 +711,7 @@ pub async fn run_tui(
                             .chain((Key::Char('\n'), || {
                                 tui_state.send_current_message().map(|t| tasks.add_task(t));
                             })),
-                        Mode::RoomFilter(lineedit) => input
+                        Mode::RoomFilter(lineedit) | Mode::RoomFilterUnread(lineedit) => input
                             .chain(
                                 EditBehavior::new(lineedit)
                                     .delete_forwards_on(Key::Delete)
