@@ -26,8 +26,9 @@ use tui::Event;
 
 pub struct RoomState {
     pub messages: timeline::RoomTimelineCache,
-    pub name: String,
+    name: String,
     latest_read_message: Option<EventId>,
+    num_unread_notifications: u64,
 }
 
 impl RoomState {
@@ -42,10 +43,12 @@ impl RoomState {
             messages: timeline::RoomTimelineCache::default(),
             name,
             latest_read_message,
+            num_unread_notifications: room.unread_notification_counts().notification_count,
         }
     }
 
     pub fn mark_newest_event_as_read(&mut self) -> Option<EventId> {
+        self.num_unread_notifications = 0;
         let latest = self.messages.end().cloned();
         if latest.is_some() && self.latest_read_message != latest {
             self.latest_read_message = latest;
@@ -53,6 +56,15 @@ impl RoomState {
         } else {
             None
         }
+    }
+    pub fn num_unread_notifications(&self) -> u64 {
+        self.num_unread_notifications
+    }
+    pub fn has_unread(&self) -> bool {
+        self.num_unread_notifications > 0
+    }
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -179,6 +191,12 @@ impl EventHandler for Connection {
                 }
                 Err(e) => tracing::error!("can't deserialize event from notification: {:?}", e),
             }
+        }
+        {
+            let mut state = self.state.lock().await;
+            let m = &mut state.rooms.get_mut(&room.room_id()).unwrap();
+            m.num_unread_notifications = room.unread_notification_counts().notification_count;
+            self.update().await;
         }
     }
 }
