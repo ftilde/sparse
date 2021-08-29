@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::io::stdout;
 use std::sync::Arc;
@@ -56,7 +57,7 @@ impl<'a> Rooms<'a> {
         if let Some(current) = &self.1.current_room {
             self.active_rooms()
                 .into_iter()
-                .find(|(id, _)| **id == current.id)
+                .find(|(id, _)| **id == *current)
                 .is_some()
         } else {
             false
@@ -71,7 +72,7 @@ impl<'a> Rooms<'a> {
         for (id, r) in self.active_rooms().into_iter() {
             layout = layout.widget(RoomSummary {
                 state: r,
-                current: self.1.current_room.as_ref().map(|c| &c.id) == Some(id),
+                current: self.1.current_room.as_ref() == Some(id),
             });
         }
         layout
@@ -87,48 +88,45 @@ impl RoomsMut<'_> {
 }
 impl Scrollable for RoomsMut<'_> {
     fn scroll_backwards(&mut self) -> OperationResult {
-        self.1.current_room = if let Some(current) = self.1.current_room.take() {
+        let new_current_room = if let Some(current) = self.1.current_room.take() {
             let rooms = self.as_rooms();
             let mut it = rooms
                 .active_rooms()
                 .into_iter()
                 .rev()
-                .skip_while(|(id, _)| *id != &current.id);
+                .skip_while(|(id, _)| **id != current);
             it.next();
             Some(
                 it.next()
                     .or(self.as_rooms().active_rooms().into_iter().rev().next())
-                    .map(|(k, _)| RoomState::at_last_message(&k))
+                    .map(|(k, _)| k.clone())
                     .unwrap_or(current),
             )
         } else {
-            self.0
-                .rooms
-                .keys()
-                .rev()
-                .next()
-                .map(RoomState::at_last_message)
+            self.0.rooms.keys().rev().next().cloned()
         };
+        self.1.set_current_room(new_current_room);
         Ok(())
     }
 
     fn scroll_forwards(&mut self) -> OperationResult {
-        self.1.current_room = if let Some(current) = self.1.current_room.take() {
+        let new_current_room = if let Some(current) = self.1.current_room.take() {
             let rooms = self.as_rooms();
             let mut it = rooms
                 .active_rooms()
                 .into_iter()
-                .skip_while(|(id, _)| *id != &current.id);
+                .skip_while(|(id, _)| **id != current);
             it.next();
             Some(
                 it.next()
                     .or(self.as_rooms().active_rooms().into_iter().next())
-                    .map(|(k, _)| RoomState::at_last_message(&k))
+                    .map(|(k, _)| k.clone())
                     .unwrap_or(current),
             )
         } else {
-            self.0.rooms.keys().next().map(RoomState::at_last_message)
+            self.0.rooms.keys().next().cloned()
         };
+        self.1.set_current_room(new_current_room);
         Ok(())
     }
 }
@@ -154,9 +152,9 @@ struct MessagesMut<'a>(&'a State, &'a mut TuiState);
 
 impl Scrollable for MessagesMut<'_> {
     fn scroll_backwards(&mut self) -> OperationResult {
-        let mut room = self.1.current_room.as_mut().ok_or(())?;
-        let messages = &self.0.rooms.get(&room.id).ok_or(())?.messages;
-        let pos = match &room.current_message {
+        let mut current = self.1.current_room_state_mut().ok_or(())?;
+        let messages = &self.0.rooms.get(&current.id).ok_or(())?.messages;
+        let pos = match &current.selection {
             MessageSelection::Newest => messages.walk_from_newest().message(),
             MessageSelection::Specific(id) => {
                 let pos = messages.walk_from_known(&id).message().ok_or(())?;
@@ -164,19 +162,19 @@ impl Scrollable for MessagesMut<'_> {
             }
         }
         .ok_or(())?;
-        room.current_message = MessageSelection::Specific(messages.message(pos).event_id().clone());
+        current.selection = MessageSelection::Specific(messages.message(pos).event_id().clone());
         Ok(())
     }
 
     fn scroll_forwards(&mut self) -> OperationResult {
-        let mut room = self.1.current_room.as_mut().ok_or(())?;
-        let messages = &self.0.rooms.get(&room.id).ok_or(())?.messages;
-        let pos = match &room.current_message {
+        let mut current = self.1.current_room_state_mut().ok_or(())?;
+        let messages = &self.0.rooms.get(&current.id).ok_or(())?.messages;
+        let pos = match &current.selection {
             MessageSelection::Newest => return Err(()),
             MessageSelection::Specific(id) => messages.walk_from_known(&id).message(),
         }
         .ok_or(())?;
-        room.current_message = match messages.next(pos) {
+        current.selection = match messages.next(pos) {
             EventWalkResult::End => MessageSelection::Newest,
             EventWalkResult::Message(pos) => {
                 MessageSelection::Specific(messages.message(pos).event_id().clone())
@@ -187,8 +185,8 @@ impl Scrollable for MessagesMut<'_> {
     }
 
     fn scroll_to_end(&mut self) -> OperationResult {
-        let mut room = self.1.current_room.as_mut().ok_or(())?;
-        room.current_message = match &room.current_message {
+        let mut current = self.1.current_room_state_mut().ok_or(())?;
+        current.selection = match &current.selection {
             MessageSelection::Newest => return Err(()),
             MessageSelection::Specific(_id) => MessageSelection::Newest,
         };
@@ -307,7 +305,7 @@ impl Messages<'_> {
         mut window: Window,
         hints: RenderingHints,
         mut msg: EventWalkResult<'b>,
-        room: &RoomState,
+        room: &RoomId,
         messages: &'b RoomTimelineCache,
     ) {
         loop {
@@ -334,7 +332,7 @@ impl Messages<'_> {
                     let mut c = Cursor::new(&mut window);
                     write!(&mut c, message_fetch_symbol!()).unwrap();
                     self.2
-                        .set_message_query(room.id.clone(), MessageQuery::BeforeCache);
+                        .set_message_query(room.clone(), MessageQuery::BeforeCache);
                     break;
                 }
             };
@@ -344,15 +342,14 @@ impl Messages<'_> {
         &self,
         mut window: Window,
         hints: RenderingHints,
-        room: &RoomState,
+        room: &RoomId,
         messages: &RoomTimelineCache,
     ) {
         let msg_id = match messages.walk_from_newest() {
             EventWalkResultNewest::Message(m) => m,
             EventWalkResultNewest::End => return,
             EventWalkResultNewest::RequiresFetch(latest) => {
-                self.2
-                    .set_message_query(room.id.clone(), MessageQuery::Newest);
+                self.2.set_message_query(room.clone(), MessageQuery::Newest);
 
                 let split = (window.get_height() - 1).from_origin();
                 let (above, mut below) = match window.split(split) {
@@ -387,7 +384,7 @@ impl Messages<'_> {
         window: Window,
         hints: RenderingHints,
         selected_msg: &EventId,
-        room: &RoomState,
+        room: &RoomId,
         messages: &RoomTimelineCache,
     ) {
         let start_msg = messages.walk_from_known(selected_msg);
@@ -458,7 +455,7 @@ impl Messages<'_> {
                     let mut c = Cursor::new(&mut window);
                     write!(&mut c, message_fetch_symbol!()).unwrap();
                     self.2
-                        .set_message_query(room.id.clone(), MessageQuery::AfterCache);
+                        .set_message_query(room.clone(), MessageQuery::AfterCache);
                     break;
                 }
             };
@@ -475,24 +472,26 @@ impl Widget for Messages<'_> {
     }
 
     fn draw(&self, mut window: Window, hints: RenderingHints) {
-        if let Some(room) = self.1.current_room.as_ref() {
-            if let Some(state) = self.0.rooms.get(&room.id) {
+        if let Some(current) = self.1.current_room_state().as_ref() {
+            if let Some(state) = self.0.rooms.get(&current.id) {
                 let messages = &state.messages;
-                match &room.current_message {
-                    MessageSelection::Newest => self.draw_newest(window, hints, room, messages),
+                match &current.selection {
+                    MessageSelection::Newest => {
+                        self.draw_newest(window, hints, &current.id, messages)
+                    }
                     MessageSelection::Specific(id) => {
-                        self.draw_selected(window, hints, id, room, messages)
+                        self.draw_selected(window, hints, id, &current.id, messages)
                     }
                 }
             } else {
                 let mut c = Cursor::new(&mut window);
                 c.move_to_bottom();
                 write!(&mut c, message_fetch_symbol!()).unwrap();
-                let query = match &room.current_message {
+                let query = match &current.selection {
                     MessageSelection::Newest => MessageQuery::Newest,
                     MessageSelection::Specific(_id) => MessageQuery::BeforeCache,
                 };
-                self.2.set_message_query(room.id.clone(), query);
+                self.2.set_message_query(current.id.clone(), query);
             }
         }
     }
@@ -521,50 +520,83 @@ enum MessageSelection {
 
 struct RoomState {
     id: RoomId,
-    current_message: MessageSelection,
+    msg_edit: PromptLine,
+    selection: MessageSelection,
 }
 
 impl RoomState {
-    fn at_last_message(id: &RoomId) -> Self {
+    fn at_last_message(id: RoomId) -> Self {
         RoomState {
-            id: id.clone(),
-            current_message: MessageSelection::Newest,
+            id,
+            msg_edit: PromptLine::with_prompt(" > ".to_owned()),
+            selection: MessageSelection::Newest,
+        }
+    }
+    fn send_current_message(&mut self) -> Option<Task> {
+        let msg = self.msg_edit.get().to_owned();
+        if !msg.is_empty() {
+            self.msg_edit.clear().unwrap();
+            Some(Task::Send(self.id.clone(), msg))
+        } else {
+            None
         }
     }
 }
 
 struct TuiState {
-    msg_edit: PromptLine,
-    current_room: Option<RoomState>,
+    current_room: Option<RoomId>,
+    rooms: BTreeMap<RoomId, RoomState>,
     mode: Mode,
 }
 
 impl TuiState {
-    fn send_current_message(&mut self) -> Option<Task> {
-        if let Some(room) = &self.current_room {
-            let msg = self.msg_edit.get().to_owned();
-            if !msg.is_empty() {
-                self.msg_edit.clear().unwrap();
-                return Some(Task::Send(room.id.clone(), msg));
+    fn new(current_room: Option<RoomId>) -> Self {
+        let mut s = TuiState {
+            rooms: BTreeMap::new(),
+            current_room: None,
+            mode: Mode::Normal,
+        };
+        s.set_current_room(current_room);
+        s
+    }
+    fn set_current_room(&mut self, id: Option<RoomId>) {
+        if let Some(id) = &id {
+            if !self.rooms.contains_key(id) {
+                self.rooms
+                    .insert(id.clone(), RoomState::at_last_message(id.clone()));
             }
         }
-        None
+        self.current_room = id;
+    }
+    fn current_room_state(&self) -> Option<&RoomState> {
+        self.current_room
+            .as_ref()
+            .map(|r| self.rooms.get(r).unwrap())
+    }
+    fn current_room_state_mut(&mut self) -> Option<&mut RoomState> {
+        if let Some(id) = self.current_room.as_ref() {
+            Some(self.rooms.get_mut(id).unwrap())
+        } else {
+            None
+        }
     }
 }
 
 fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl Widget + 'a {
-    HLayout::new()
-        .separator(GraphemeCluster::try_from('|').unwrap())
-        .widget_weighted(Rooms(state, tui_state).as_widget(), 0.25)
-        .widget_weighted(
+    let mut layout = HLayout::new()
+        .separator(GraphemeCluster::try_from('│').unwrap())
+        .widget_weighted(Rooms(state, tui_state).as_widget(), 0.25);
+    if let Some(current) = tui_state.current_room_state() {
+        layout = layout.widget_weighted(
             VLayout::new()
-                .separator(GraphemeCluster::try_from('-').unwrap())
                 .widget(Messages(state, tui_state, tasks))
-                .widget(tui_state.msg_edit.as_widget().with_hints(move |h| {
+                .widget(current.msg_edit.as_widget().with_hints(move |h| {
                     h.active(h.active && matches!(tui_state.mode, Mode::LineInsert))
                 })),
             0.75,
         )
+    }
+    layout
 }
 
 #[derive(Debug)]
@@ -596,20 +628,7 @@ pub async fn run_tui(
     let mut term = Terminal::new(stdout.lock()).unwrap();
     let mut tui_state = {
         let state = state.lock().await;
-
-        let current_room = if let Some(id) = state.rooms.keys().next() {
-            Some(RoomState {
-                id: id.clone(),
-                current_message: MessageSelection::Newest,
-            })
-        } else {
-            None
-        };
-        TuiState {
-            msg_edit: PromptLine::with_prompt(" > ".to_owned()),
-            current_room,
-            mode: Mode::Normal,
-        }
+        TuiState::new(state.rooms.keys().next().cloned())
     };
 
     let mut run = true;
@@ -699,18 +718,26 @@ pub async fn run_tui(
                                     .to_end_on(Key::Ctrl('g')),
                             )
                             .chain((Key::Char('\n'), || {
-                                tui_state.send_current_message().map(|t| tasks.add_task(t));
+                                tui_state.current_room_state_mut().and_then(|r| {
+                                    r.send_current_message().map(|t| tasks.add_task(t))
+                                });
                             })),
-                        Mode::LineInsert => input
-                            .chain(
-                                EditBehavior::new(&mut tui_state.msg_edit)
-                                    .delete_forwards_on(Key::Delete)
-                                    .delete_backwards_on(Key::Backspace)
-                                    .clear_on(Key::Ctrl('c')),
-                            )
-                            .chain((Key::Char('\n'), || {
-                                tui_state.send_current_message().map(|t| tasks.add_task(t));
-                            })),
+                        Mode::LineInsert => {
+                            if let Some(room) = tui_state.current_room_state_mut() {
+                                input
+                                    .chain(
+                                        EditBehavior::new(&mut room.msg_edit)
+                                            .delete_forwards_on(Key::Delete)
+                                            .delete_backwards_on(Key::Backspace)
+                                            .clear_on(Key::Ctrl('c')),
+                                    )
+                                    .chain((Key::Char('\n'), || {
+                                        room.send_current_message().map(|t| tasks.add_task(t));
+                                    }))
+                            } else {
+                                input
+                            }
+                        }
                         Mode::RoomFilter(lineedit) | Mode::RoomFilterUnread(lineedit) => input
                             .chain(
                                 EditBehavior::new(lineedit)
@@ -731,10 +758,10 @@ pub async fn run_tui(
                             })),
                     };
 
-                    if let Some(r) = &tui_state.current_room {
-                        if let Some(room) = state.rooms.get_mut(&r.id) {
+                    if let Some(id) = &tui_state.current_room {
+                        if let Some(room) = state.rooms.get_mut(id) {
                             if let Some(read_event_id) = room.mark_newest_event_as_read() {
-                                tasks.add_task(Task::ReadReceipt(r.id.clone(), read_event_id));
+                                tasks.add_task(Task::ReadReceipt(id.clone(), read_event_id));
                             }
                         }
                     }
