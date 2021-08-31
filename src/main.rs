@@ -1,6 +1,5 @@
 mod devices;
 mod timeline;
-mod tui;
 mod tui_app;
 mod verification_initiate;
 mod verification_wait;

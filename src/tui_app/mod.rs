@@ -16,13 +16,14 @@ use matrix_sdk::{
 };
 
 use crate::timeline;
-use crate::tui;
 
 use nix::sys::signal::{SigSet, Signal};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 use tui::Event;
+
+mod tui;
 
 pub struct RoomState {
     pub messages: timeline::RoomTimelineCache,
