@@ -8,7 +8,13 @@ use unsegen::input::{EditBehavior, Editable, Input, Key, ScrollBehavior, Scrolla
 use unsegen::widget::builtin::*;
 use unsegen::widget::*;
 
-use matrix_sdk::ruma::identifiers::{EventId, RoomId};
+use matrix_sdk::ruma::{
+    events::{
+        room::message::{MessageEventContent, MessageType},
+        AnySyncMessageEvent, SyncMessageEvent,
+    },
+    identifiers::{EventId, RoomId},
+};
 
 use crate::timeline::MessageQuery;
 use crate::tui_app::State;
@@ -61,6 +67,7 @@ pub enum MessageSelection {
 struct RoomState {
     id: RoomId,
     msg_edit: PromptLine,
+    msg_edit_type: SendMessageType,
     selection: MessageSelection,
 }
 
@@ -69,6 +76,7 @@ impl RoomState {
         RoomState {
             id,
             msg_edit: PromptLine::with_prompt(" > ".to_owned()),
+            msg_edit_type: SendMessageType::Simple,
             selection: MessageSelection::Newest,
         }
     }
@@ -76,7 +84,9 @@ impl RoomState {
         let msg = self.msg_edit.get().to_owned();
         if !msg.is_empty() {
             self.msg_edit.clear().unwrap();
-            Some(Task::Send(self.id.clone(), msg))
+            let mut tmp_type = SendMessageType::Simple;
+            std::mem::swap(&mut tmp_type, &mut self.msg_edit_type);
+            Some(Task::Send(self.id.clone(), msg, tmp_type))
         } else {
             None
         }
@@ -122,6 +132,23 @@ impl TuiState {
     }
 }
 
+fn msg_edit<'a>(room_state: &'a RoomState, potentially_active: bool) -> impl Widget + 'a {
+    let mut layout = VLayout::new();
+    if let SendMessageType::Reply(orig) = &room_state.msg_edit_type {
+        let c = match &orig.content.msgtype {
+            MessageType::Text(t) => t.body.clone(),
+            o => format!("{:?}", o),
+        };
+        layout = layout.widget(format!("-> {}: {:?}", orig.sender, c));
+    }
+    layout.widget(
+        room_state
+            .msg_edit
+            .as_widget()
+            .with_hints(move |h| h.active(h.active && potentially_active)),
+    )
+}
+
 fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl Widget + 'a {
     let mut layout = HLayout::new()
         .separator(GraphemeCluster::try_from('│').unwrap())
@@ -130,9 +157,10 @@ fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl 
         layout = layout.widget_weighted(
             VLayout::new()
                 .widget(messages::Messages(state, tui_state, tasks))
-                .widget(current.msg_edit.as_widget().with_hints(move |h| {
-                    h.active(h.active && matches!(tui_state.mode, Mode::LineInsert))
-                })),
+                .widget(msg_edit(
+                    current,
+                    matches!(tui_state.mode, Mode::LineInsert),
+                )),
             0.75,
         )
     }
@@ -147,8 +175,14 @@ pub enum Event {
 }
 
 #[derive(Debug)]
+pub enum SendMessageType {
+    Simple,
+    Reply(SyncMessageEvent<MessageEventContent>),
+}
+
+#[derive(Debug)]
 pub enum Task {
-    Send(RoomId, String),
+    Send(RoomId, String, SendMessageType),
     ReadReceipt(RoomId, EventId),
 }
 
@@ -245,6 +279,24 @@ pub async fn run_tui(
                             }))
                             .chain((Key::Char('O'), || {
                                 tui_state.mode = Mode::RoomFilterUnread(LineEdit::new())
+                            }))
+                            .chain((Key::Char('r'), || {
+                                if let Some(id) = &tui_state.current_room {
+                                    if let Some(room) = state.rooms.get(id) {
+                                        let tui_room = tui_state.current_room_state_mut().unwrap();
+                                        if let MessageSelection::Specific(eid) = &tui_room.selection
+                                        {
+                                            if let Some(crate::timeline::Event::Message(
+                                                AnySyncMessageEvent::RoomMessage(msg),
+                                            )) = room.messages.message_from_id(eid)
+                                            {
+                                                tui_room.msg_edit_type =
+                                                    SendMessageType::Reply(msg.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                                tui_state.mode = Mode::LineInsert;
                             }))
                             .chain(
                                 ScrollBehavior::new(&mut rooms::RoomsMut(

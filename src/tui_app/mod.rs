@@ -205,11 +205,18 @@ impl EventHandler for Connection {
 async fn run_matrix_task_loop(c: Connection, mut tasks: mpsc::Receiver<tui::Task>) {
     while let Some(task) = tasks.recv().await {
         match task {
-            tui::Task::Send(room_id, msg) => {
+            tui::Task::Send(room_id, msg, typ) => {
                 if let Some(room) = c.client.get_joined_room(&room_id) {
-                    let content =
-                        AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(msg));
-                    room.send(content, None).await.unwrap();
+                    let content = match typ {
+                        tui::SendMessageType::Simple => MessageEventContent::text_plain(msg),
+                        tui::SendMessageType::Reply(orig_msg) => {
+                            let m = orig_msg.into_full_event(room_id);
+                            MessageEventContent::text_reply_plain(msg, &m)
+                        }
+                    };
+                    room.send(AnyMessageEventContent::RoomMessage(content), None)
+                        .await
+                        .unwrap();
                 } else {
                     tracing::error!("can't send message, no joined room");
                 }

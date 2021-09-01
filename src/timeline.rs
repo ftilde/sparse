@@ -104,13 +104,20 @@ impl RoomTimelineCache {
         &self.messages[id.pos]
     }
 
-    pub fn walk_from_known(&self, id: &EventId) -> EventWalkResult {
-        if let Some((i, _)) = self
-            .messages
+    fn find(&self, id: &EventId) -> Option<(usize, &Event)> {
+        // TODO: We might want to store an index to speed this operation up if it's too slow
+        self.messages
             .iter()
             .enumerate()
             .find(|(_, m)| *m.event_id() == *id)
-        {
+    }
+
+    pub fn message_from_id(&self, id: &EventId) -> Option<&Event> {
+        self.find(id).map(|(_, e)| e)
+    }
+
+    pub fn walk_from_known(&self, id: &EventId) -> EventWalkResult {
+        if let Some((i, _)) = self.find(id) {
             EventWalkResult::Message(RoomTimelineIndex::new(i))
         } else {
             EventWalkResult::RequiresFetchFrom(id.clone())
