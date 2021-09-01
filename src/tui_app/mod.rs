@@ -158,36 +158,38 @@ impl EventHandler for Connection {
         {
             match notification.event.deserialize() {
                 Ok(e) => {
-                    let mut notification = notify_rust::Notification::new();
-                    if room.is_direct() {
-                        notification.summary(e.sender().as_str());
-                    } else {
-                        notification.summary(&format!(
-                            "{} in {}",
-                            e.sender().as_str(),
-                            room.display_name()
-                                .await
-                                .unwrap_or_else(|_| "Unknown room".to_owned())
-                        ));
-                    }
-                    match e {
-                        AnySyncRoomEvent::Message(m) => match m {
-                            AnySyncMessageEvent::RoomMessage(m) => match m.content.msgtype {
-                                MessageType::Text(t) => {
-                                    notification.body(&t.body);
-                                }
+                    if Some(e.sender()) != self.client.user_id().await.as_ref() {
+                        let mut notification = notify_rust::Notification::new();
+                        if room.is_direct() {
+                            notification.summary(e.sender().as_str());
+                        } else {
+                            notification.summary(&format!(
+                                "{} in {}",
+                                e.sender().as_str(),
+                                room.display_name()
+                                    .await
+                                    .unwrap_or_else(|_| "Unknown room".to_owned())
+                            ));
+                        }
+                        match e {
+                            AnySyncRoomEvent::Message(m) => match m {
+                                AnySyncMessageEvent::RoomMessage(m) => match m.content.msgtype {
+                                    MessageType::Text(t) => {
+                                        notification.body(&t.body);
+                                    }
+                                    o => {
+                                        notification.body(&format!("{:?}", o));
+                                    }
+                                },
                                 o => {
                                     notification.body(&format!("{:?}", o));
                                 }
                             },
-                            o => {
-                                notification.body(&format!("{:?}", o));
-                            }
-                        },
-                        _ => {}
-                    }
-                    if let Err(e) = notification.show() {
-                        tracing::error!("Failed to show notification {}", e);
+                            _ => {}
+                        }
+                        if let Err(e) = notification.show() {
+                            tracing::error!("Failed to show notification {}", e);
+                        }
                     }
                 }
                 Err(e) => tracing::error!("can't deserialize event from notification: {:?}", e),
