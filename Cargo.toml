@@ -17,6 +17,7 @@ panic = "abort"
 
 tokio = { version = "1.6.0", features = ["full", "rt-multi-thread"] }
 url = "2.2.0"
+chrono = "0.4"
 dirs = "*"
 tracing-subscriber = "0.2.8"
 tracing = "0.1"

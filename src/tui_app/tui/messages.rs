@@ -270,10 +270,20 @@ struct TuiEvent<'a>(&'a crate::timeline::Event, Width);
 
 impl TuiEvent<'_> {
     fn header(&self) -> Option<String> {
+        use chrono::TimeZone;
+        let send_time_secs_unix = self.0.origin_server_ts().as_secs();
+        let send_time_naive =
+            chrono::naive::NaiveDateTime::from_timestamp(send_time_secs_unix.into(), 0);
+        let send_time = chrono::Local.from_utc_datetime(&send_time_naive);
+        let time_str = send_time.format("%m-%d %H:%M");
         match self.0 {
             crate::timeline::Event::Message(e) => match e {
-                AnySyncMessageEvent::RoomMessage(msg) => Some(format!("{}: ", msg.sender)),
-                AnySyncMessageEvent::RoomEncrypted(msg) => Some(format!("{}: ", msg.sender)),
+                AnySyncMessageEvent::RoomMessage(msg) => {
+                    Some(format!("{} {}: ", time_str, msg.sender))
+                }
+                AnySyncMessageEvent::RoomEncrypted(msg) => {
+                    Some(format!("{} {}: ", time_str, msg.sender))
+                }
                 _o => None,
             },
             _o => None,
