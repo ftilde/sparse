@@ -292,6 +292,7 @@ pub async fn run_tui(
                                             {
                                                 tui_room.msg_edit_type =
                                                     SendMessageType::Reply(msg.clone());
+                                                tui_room.selection = MessageSelection::Newest;
                                             }
                                         }
                                     }
