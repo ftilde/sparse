@@ -278,9 +278,10 @@ impl TuiEvent<'_> {
         let time_str = send_time.format("%m-%d %H:%M");
         match self.0 {
             crate::timeline::Event::Message(e) => match e {
-                AnySyncMessageEvent::RoomMessage(msg) => {
-                    Some(format!("{} {}: ", time_str, msg.sender))
-                }
+                AnySyncMessageEvent::RoomMessage(msg) => match &msg.content.msgtype {
+                    MessageType::Text(_) => Some(format!("{} {}: ", time_str, msg.sender)),
+                    _ => Some(format!("{} {} ", time_str, msg.sender)),
+                },
                 AnySyncMessageEvent::RoomEncrypted(msg) => {
                     Some(format!("{} {}: ", time_str, msg.sender))
                 }
@@ -302,6 +303,26 @@ impl TuiEvent<'_> {
             crate::timeline::Event::Message(e) => match e {
                 AnySyncMessageEvent::RoomMessage(msg) => match &msg.content.msgtype {
                     MessageType::Text(text) => c.write(&text.body),
+                    MessageType::Image(img) => {
+                        let _ = write!(
+                            c,
+                            "sent {} image ({})",
+                            if img.url.is_none() {
+                                "an encrypted"
+                            } else {
+                                "an"
+                            },
+                            img.body
+                        );
+                    }
+                    MessageType::File(f) => {
+                        let _ = write!(
+                            c,
+                            "sent {} file ({})",
+                            if f.url.is_none() { "an encrypted" } else { "a" },
+                            f.body
+                        );
+                    }
                     o => {
                         let _ = write!(c, "Other message {:?}", o);
                     }
