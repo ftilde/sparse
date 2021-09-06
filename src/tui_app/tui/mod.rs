@@ -267,7 +267,15 @@ pub async fn run_tui(
                         .on_default::<unsegen_signals::SIGTSTP>();
                     let input = input.chain(sig_behavior);
 
-                    let input = input.chain((Key::Esc, || tui_state.mode = Mode::Normal));
+                    let input = input.chain((Key::Esc, || {
+                        if let Mode::Normal = tui_state.mode {
+                            tui_state
+                                .current_room_state_mut()
+                                .map(|tui_room| tui_room.selection = MessageSelection::Newest);
+                        } else {
+                            tui_state.mode = Mode::Normal
+                        }
+                    }));
 
                     let mut state = state.lock().await;
                     match &mut tui_state.mode {
