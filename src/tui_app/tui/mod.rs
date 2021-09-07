@@ -26,6 +26,7 @@ mod messages;
 mod rooms;
 
 const DRAW_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(16);
+const OPEN_PROG: &str = "xdg-open";
 
 #[derive(Copy, Clone)]
 pub struct Tasks<'a> {
@@ -111,6 +112,42 @@ fn send_read_receipt(c: &Client, rid: RoomId, eid: EventId) {
         });
     } else {
         tracing::error!("can't send read receipt, no joined room");
+    }
+}
+
+fn open_file(c: Client, content: impl matrix_sdk::media::MediaEventContent + Send) {
+    if let Some(media_type) = content.file() {
+        tokio::spawn(async move {
+            match c
+                .get_media_content(
+                    &matrix_sdk::media::MediaRequest {
+                        media_type,
+                        format: matrix_sdk::media::MediaFormat::File,
+                    },
+                    true,
+                )
+                .await
+            {
+                Ok(bytes) => {
+                    let path = {
+                        use std::io::Write;
+                        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+                        tmpfile.write_all(&bytes[..]).unwrap();
+                        tmpfile.flush().unwrap();
+                        tmpfile.into_temp_path()
+                    };
+                    let mut join_handle = tokio::process::Command::new(OPEN_PROG)
+                        .arg(&path)
+                        .spawn()
+                        .unwrap();
+                    join_handle.wait().await.unwrap();
+                    path.keep().unwrap(); //We don't know if the file was opened when xdg-open finished...
+                }
+                Err(e) => tracing::error!("can't open file: {:?}", e),
+            }
+        });
+    } else {
+        tracing::error!("can't open file: No content");
     }
 }
 
@@ -335,7 +372,29 @@ pub async fn run_tui(
                             .chain((Key::Char('\n'), || {
                                 tui_state
                                     .current_room_state_mut()
-                                    .map(|r| r.send_current_message(&client));
+                                    .map(|r| match &r.selection {
+                                        MessageSelection::Newest => {
+                                            r.send_current_message(&client);
+                                        }
+                                        MessageSelection::Specific(eid) => {
+                                            if let Some(crate::timeline::Event::Message(
+                                                AnySyncMessageEvent::RoomMessage(msg),
+                                            )) = state
+                                                .rooms
+                                                .get(&r.id)
+                                                .unwrap()
+                                                .messages
+                                                .message_from_id(&eid)
+                                            {
+                                                match &msg.content.msgtype {
+                                                    MessageType::Image(img) => {
+                                                        open_file(client.clone(), img.clone());
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                    });
                             })),
                         Mode::LineInsert => {
                             if let Some(room) = tui_state.current_room_state_mut() {
