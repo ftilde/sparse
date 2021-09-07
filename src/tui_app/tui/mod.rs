@@ -1,3 +1,4 @@
+use matrix_sdk::Client;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::stdout;
@@ -28,7 +29,6 @@ const DRAW_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(16);
 
 #[derive(Copy, Clone)]
 pub struct Tasks<'a> {
-    tasks: &'a RefCell<Vec<Task>>,
     message_query: &'a RefCell<Option<MessageQueryRequest>>,
 }
 
@@ -36,11 +36,6 @@ impl Tasks<'_> {
     fn set_message_query(&self, room: RoomId, query: MessageQuery) {
         let mut q = self.message_query.borrow_mut();
         *q = Some(MessageQueryRequest { room, kind: query });
-    }
-
-    fn add_task(&self, task: Task) {
-        let mut t = self.tasks.borrow_mut();
-        t.push(task);
     }
 }
 enum Mode {
@@ -80,16 +75,42 @@ impl RoomState {
             selection: MessageSelection::Newest,
         }
     }
-    fn send_current_message(&mut self) -> Option<Task> {
+    fn send_current_message(&mut self, c: &Client) {
         let msg = self.msg_edit.get().to_owned();
         if !msg.is_empty() {
             self.msg_edit.clear().unwrap();
             let mut tmp_type = SendMessageType::Simple;
             std::mem::swap(&mut tmp_type, &mut self.msg_edit_type);
-            Some(Task::Send(self.id.clone(), msg, tmp_type))
-        } else {
-            None
+            if let Some(room) = c.get_joined_room(&self.id) {
+                let id = self.id.clone();
+                tokio::spawn(async move {
+                    let content = match tmp_type {
+                        SendMessageType::Simple => MessageEventContent::text_plain(msg),
+                        SendMessageType::Reply(orig_msg) => {
+                            let m = orig_msg.into_full_event(id);
+                            MessageEventContent::text_reply_plain(msg, &m)
+                        }
+                    };
+                    room.send(
+                        matrix_sdk::ruma::events::AnyMessageEventContent::RoomMessage(content),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                });
+            } else {
+                tracing::error!("can't send message, no joined room");
+            }
         }
+    }
+}
+fn send_read_receipt(c: &Client, rid: RoomId, eid: EventId) {
+    if let Some(room) = c.get_joined_room(&rid) {
+        tokio::spawn(async move {
+            room.read_receipt(&eid).await.unwrap();
+        });
+    } else {
+        tracing::error!("can't send read receipt, no joined room");
     }
 }
 
@@ -180,12 +201,6 @@ pub enum SendMessageType {
     Reply(SyncMessageEvent<MessageEventContent>),
 }
 
-#[derive(Debug)]
-pub enum Task {
-    Send(RoomId, String, SendMessageType),
-    ReadReceipt(RoomId, EventId),
-}
-
 #[derive(Clone)]
 pub struct MessageQueryRequest {
     pub room: RoomId,
@@ -194,9 +209,9 @@ pub struct MessageQueryRequest {
 
 pub async fn run_tui(
     mut events: mpsc::Receiver<Event>,
-    task_sink: mpsc::Sender<Task>,
     message_query_sink: watch::Sender<Option<MessageQueryRequest>>,
     state: Arc<Mutex<State>>,
+    client: Client,
 ) {
     let stdout = stdout();
     let mut term = Terminal::new(stdout.lock()).unwrap();
@@ -207,11 +222,9 @@ pub async fn run_tui(
 
     let mut run = true;
 
-    let task_vec = RefCell::new(Vec::new());
     let message_query = RefCell::new(None);
 
     let tasks = Tasks {
-        tasks: &task_vec,
         message_query: &message_query,
     };
     while run {
@@ -222,11 +235,6 @@ pub async fn run_tui(
         }
         term.present();
 
-        // TODO: somehow we need to make sure that this does not block. at the moment it still
-        // might do so because the channel has 5 elements.
-        for t in tasks.tasks.borrow_mut().drain(..) {
-            task_sink.send(t).await.unwrap();
-        }
         if let Some(query) = tasks.message_query.borrow_mut().take() {
             if message_query_sink.send(Some(query)).is_err() {
                 return;
@@ -325,9 +333,9 @@ pub async fn run_tui(
                                 .to_end_on(Key::Ctrl('g')),
                             )
                             .chain((Key::Char('\n'), || {
-                                tui_state.current_room_state_mut().and_then(|r| {
-                                    r.send_current_message().map(|t| tasks.add_task(t))
-                                });
+                                tui_state
+                                    .current_room_state_mut()
+                                    .map(|r| r.send_current_message(&client));
                             })),
                         Mode::LineInsert => {
                             if let Some(room) = tui_state.current_room_state_mut() {
@@ -339,7 +347,7 @@ pub async fn run_tui(
                                             .clear_on(Key::Ctrl('c')),
                                     )
                                     .chain((Key::Char('\n'), || {
-                                        room.send_current_message().map(|t| tasks.add_task(t));
+                                        room.send_current_message(&client);
                                     }))
                             } else {
                                 input
@@ -371,7 +379,7 @@ pub async fn run_tui(
                     if let Some(id) = &tui_state.current_room {
                         if let Some(room) = state.rooms.get_mut(id) {
                             if let Some(read_event_id) = room.mark_newest_event_as_read() {
-                                tasks.add_task(Task::ReadReceipt(id.clone(), read_event_id));
+                                send_read_receipt(&client, id.clone(), read_event_id);
                             }
                         }
                     }

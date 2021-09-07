@@ -8,8 +8,7 @@ use matrix_sdk::{
             aliases::AliasesEventContent, canonical_alias::CanonicalAliasEventContent,
             member::MemberEventContent, name::NameEventContent,
         },
-        AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent, SyncMessageEvent,
-        SyncStateEvent,
+        AnySyncMessageEvent, AnySyncRoomEvent, SyncMessageEvent, SyncStateEvent,
     },
     ruma::identifiers::{EventId, RoomId},
     Client, EventHandler, SyncSettings,
@@ -204,36 +203,6 @@ impl EventHandler for Connection {
     }
 }
 
-async fn run_matrix_task_loop(c: Connection, mut tasks: mpsc::Receiver<tui::Task>) {
-    while let Some(task) = tasks.recv().await {
-        match task {
-            tui::Task::Send(room_id, msg, typ) => {
-                if let Some(room) = c.client.get_joined_room(&room_id) {
-                    let content = match typ {
-                        tui::SendMessageType::Simple => MessageEventContent::text_plain(msg),
-                        tui::SendMessageType::Reply(orig_msg) => {
-                            let m = orig_msg.into_full_event(room_id);
-                            MessageEventContent::text_reply_plain(msg, &m)
-                        }
-                    };
-                    room.send(AnyMessageEventContent::RoomMessage(content), None)
-                        .await
-                        .unwrap();
-                } else {
-                    tracing::error!("can't send message, no joined room");
-                }
-            }
-            tui::Task::ReadReceipt(room_id, event_id) => {
-                if let Some(room) = c.client.get_joined_room(&room_id) {
-                    room.read_receipt(&event_id).await.unwrap();
-                } else {
-                    tracing::error!("can't send read receipt, no joined room");
-                }
-            }
-        }
-    }
-}
-
 async fn run_matrix_message_fetch_loop(
     c: Connection,
     mut tasks: watch::Receiver<Option<tui::MessageQueryRequest>>,
@@ -325,7 +294,6 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
     }
 
     let (event_sender, event_receiver) = mpsc::channel(1);
-    let (task_sender, task_receiver) = mpsc::channel(1);
     let (message_query_sender, message_query_receiver) = watch::channel(None);
 
     let connection = Connection {
@@ -376,9 +344,9 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
         .unwrap();
     }));
 
+    let tui_client = connection.client.clone();
     let connection_events = connection.clone();
-    let connection_queries = connection.clone();
-    let _task_loop = tokio::spawn(async { run_matrix_task_loop(connection, task_receiver).await });
+    let connection_queries = connection;
     let _event_loop = tokio::spawn(async { run_matrix_event_loop(connection_events).await });
     let _message_query_loop = tokio::spawn(async {
         run_matrix_message_fetch_loop(connection_queries, message_query_receiver).await
@@ -388,7 +356,7 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
     start_signal_thread(event_sender.clone());
     start_keyboard_thread(event_sender);
 
-    tui::run_tui(event_receiver, task_sender, message_query_sender, state).await;
+    tui::run_tui(event_receiver, message_query_sender, state, tui_client).await;
 
     Ok(())
 }
