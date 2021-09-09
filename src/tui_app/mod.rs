@@ -11,6 +11,7 @@ use matrix_sdk::{
         AnySyncMessageEvent, AnySyncRoomEvent, SyncMessageEvent, SyncStateEvent,
     },
     ruma::identifiers::{EventId, RoomId},
+    ruma::UserId,
     Client, EventHandler, SyncSettings,
 };
 
@@ -21,14 +22,74 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 use tui::Event;
+use unsegen::base::Color;
 
 mod tui;
+type UserColors = BTreeMap<UserId, Color>;
+
+async fn calculate_user_colors(room: &Room) -> UserColors {
+    let available_colors = [
+        Color::Red,
+        Color::Blue,
+        Color::Cyan,
+        Color::Green,
+        Color::Yellow,
+        Color::Magenta,
+    ];
+    let num_colors = available_colors.len();
+    let own_color = Color::White;
+
+    let own_user_id = room.own_user_id();
+    let users = room.joined_user_ids().await.unwrap();
+
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut raw_colors = users
+        .into_iter()
+        .filter(|i| i != own_user_id)
+        .map(|i| {
+            let mut hasher = DefaultHasher::new();
+            i.as_str().hash(&mut hasher);
+            (i.to_owned(), hasher.finish() as usize % num_colors)
+        })
+        .peekable();
+
+    let mut user_colors = UserColors::new();
+    user_colors.insert(own_user_id.to_owned(), own_color);
+
+    let mut table = vec![None; num_colors];
+    'outer: while let Some((_id, pos)) = raw_colors.peek() {
+        for o in 0..num_colors {
+            let pos = (pos + o) % num_colors;
+
+            let entry = table.get_mut(pos).unwrap();
+            if entry.is_none() {
+                *entry = Some(raw_colors.next().unwrap().0);
+                continue 'outer;
+            }
+        }
+
+        for (i, e) in table.iter_mut().enumerate() {
+            if let Some(e) = e.take() {
+                user_colors.insert(e, available_colors[i]);
+            }
+        }
+    }
+    for (i, e) in table.into_iter().enumerate() {
+        if let Some(e) = e {
+            user_colors.insert(e, available_colors[i]);
+        }
+    }
+    user_colors
+}
 
 pub struct RoomState {
     pub messages: timeline::RoomTimelineCache,
     name: String,
     latest_read_message: Option<EventId>,
     num_unread_notifications: u64,
+    user_colors: UserColors,
 }
 
 impl RoomState {
@@ -44,6 +105,7 @@ impl RoomState {
             name,
             latest_read_message,
             num_unread_notifications: room.unread_notification_counts().notification_count,
+            user_colors: calculate_user_colors(room).await,
         }
     }
 
@@ -105,6 +167,7 @@ impl Connection {
             Room::Joined(_) => {
                 if let Some(r) = state.rooms.get_mut(room.room_id()) {
                     r.name = room.display_name().await.unwrap();
+                    r.user_colors = calculate_user_colors(&room).await;
                 } else {
                     state
                         .rooms

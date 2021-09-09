@@ -3,7 +3,7 @@ use unsegen::base::*;
 use unsegen::input::{OperationResult, Scrollable};
 use unsegen::widget::*;
 
-use crate::timeline::{EventWalkResult, EventWalkResultNewest, MessageQuery, RoomTimelineCache};
+use crate::timeline::{EventWalkResult, EventWalkResultNewest, MessageQuery};
 use crate::tui_app::State;
 
 use crate::tui_app::tui::{MessageSelection, Tasks, TuiState};
@@ -12,6 +12,7 @@ use matrix_sdk::{
     self,
     ruma::events::{room::message::MessageType, AnySyncMessageEvent},
     ruma::identifiers::{EventId, RoomId},
+    ruma::UserId,
 };
 
 macro_rules! message_fetch_symbol {
@@ -75,12 +76,12 @@ impl Messages<'_> {
         hints: RenderingHints,
         mut msg: EventWalkResult<'b>,
         room: &RoomId,
-        messages: &'b RoomTimelineCache,
+        state: &'b crate::tui_app::RoomState,
     ) {
         loop {
             msg = match msg {
                 EventWalkResult::Message(id) => {
-                    let evt = TuiEvent(messages.message(id), window.get_width());
+                    let evt = TuiEvent(state.messages.message(id), window.get_width(), state);
                     let h = evt.space_demand().height.min;
                     let window_height = window.get_height();
                     let (above, below) = match window.split((window_height - h).from_origin()) {
@@ -92,7 +93,7 @@ impl Messages<'_> {
 
                     evt.draw(below, hints);
                     window = above;
-                    messages.previous(id)
+                    state.messages.previous(id)
                 }
                 EventWalkResult::End => {
                     break;
@@ -112,9 +113,9 @@ impl Messages<'_> {
         mut window: Window,
         hints: RenderingHints,
         room: &RoomId,
-        messages: &RoomTimelineCache,
+        state: &crate::tui_app::RoomState,
     ) {
-        let msg_id = match messages.walk_from_newest() {
+        let msg_id = match state.messages.walk_from_newest() {
             EventWalkResultNewest::Message(m) => m,
             EventWalkResultNewest::End => return,
             EventWalkResultNewest::RequiresFetch(latest) => {
@@ -140,13 +141,7 @@ impl Messages<'_> {
                 }
             }
         };
-        self.draw_up_from(
-            window,
-            hints,
-            EventWalkResult::Message(msg_id),
-            room,
-            messages,
-        );
+        self.draw_up_from(window, hints, EventWalkResult::Message(msg_id), room, state);
     }
     fn draw_selected(
         &self,
@@ -154,20 +149,21 @@ impl Messages<'_> {
         hints: RenderingHints,
         selected_msg: &EventId,
         room: &RoomId,
-        messages: &RoomTimelineCache,
+        state: &crate::tui_app::RoomState,
     ) {
-        let start_msg = messages.walk_from_known(selected_msg);
+        let start_msg = state.messages.walk_from_known(selected_msg);
         let mut msg = start_msg.clone();
         let mut collected_height = Height::new(0).unwrap();
         let window_height = window.get_height();
         loop {
             match msg {
                 EventWalkResult::Message(id) => {
-                    collected_height += TuiEvent(messages.message(id), window.get_width())
-                        .space_demand()
-                        .height
-                        .min;
-                    msg = messages.next(id);
+                    collected_height +=
+                        TuiEvent(state.messages.message(id), window.get_width(), state)
+                            .space_demand()
+                            .height
+                            .min;
+                    msg = state.messages.next(id);
                 }
                 EventWalkResult::End => {
                     break;
@@ -188,9 +184,9 @@ impl Messages<'_> {
             };
         if let (Some(above), Some(evt)) = (
             above_selected,
-            start_msg.message().map(|id| messages.previous(id)),
+            start_msg.message().map(|id| state.messages.previous(id)),
         ) {
-            self.draw_up_from(above, hints, evt, room, messages);
+            self.draw_up_from(above, hints, evt, room, state);
         }
         let mut window = below_selected;
         let mut msg = start_msg;
@@ -198,7 +194,7 @@ impl Messages<'_> {
         loop {
             msg = match msg {
                 EventWalkResult::Message(id) => {
-                    let evt = TuiEvent(messages.message(id), window.get_width());
+                    let evt = TuiEvent(state.messages.message(id), window.get_width(), state);
                     let h = evt.space_demand().height.min;
                     let (mut current, below) = match window.split(h.from_origin()) {
                         Ok(pair) => pair,
@@ -215,7 +211,7 @@ impl Messages<'_> {
                     }
                     evt.draw(current, hints);
                     window = below;
-                    messages.next(id)
+                    state.messages.next(id)
                 }
                 EventWalkResult::End => {
                     break;
@@ -243,13 +239,10 @@ impl Widget for Messages<'_> {
     fn draw(&self, mut window: Window, hints: RenderingHints) {
         if let Some(current) = self.1.current_room_state().as_ref() {
             if let Some(state) = self.0.rooms.get(&current.id) {
-                let messages = &state.messages;
                 match &current.selection {
-                    MessageSelection::Newest => {
-                        self.draw_newest(window, hints, &current.id, messages)
-                    }
+                    MessageSelection::Newest => self.draw_newest(window, hints, &current.id, state),
                     MessageSelection::Specific(id) => {
-                        self.draw_selected(window, hints, id, &current.id, messages)
+                        self.draw_selected(window, hints, id, &current.id, state)
                     }
                 }
             } else {
@@ -266,55 +259,61 @@ impl Widget for Messages<'_> {
     }
 }
 
-struct TuiEvent<'a>(&'a crate::timeline::Event, Width);
+struct TuiEvent<'a>(
+    &'a crate::timeline::Event,
+    Width,
+    &'a crate::tui_app::RoomState,
+);
+
+fn write_user<T: unsegen::base::CursorTarget>(
+    c: &mut Cursor<T>,
+    user_id: &UserId,
+    state: &crate::tui_app::RoomState,
+) {
+    let color = state.user_colors.get(user_id).unwrap();
+    let mut c = c.save().style_modifier();
+    c.set_style_modifier(StyleModifier::new().fg_color(*color).bold(true));
+    let _ = write!(c, "{}", user_id.as_str());
+}
 
 impl TuiEvent<'_> {
-    fn header(&self) -> Option<String> {
+    fn write_time<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
         use chrono::TimeZone;
         let send_time_secs_unix = self.0.origin_server_ts().as_secs();
         let send_time_naive =
             chrono::naive::NaiveDateTime::from_timestamp(send_time_secs_unix.into(), 0);
         let send_time = chrono::Local.from_utc_datetime(&send_time_naive);
         let time_str = send_time.format("%m-%d %H:%M");
-        match self.0 {
-            crate::timeline::Event::Message(e) => match e {
-                AnySyncMessageEvent::RoomMessage(msg) => match &msg.content.msgtype {
-                    MessageType::Text(_) => Some(format!("{} {}: ", time_str, msg.sender)),
-                    _ => Some(format!("{} {} ", time_str, msg.sender)),
-                },
-                AnySyncMessageEvent::RoomEncrypted(msg) => {
-                    Some(format!("{} {}: ", time_str, msg.sender))
-                }
-                _o => None,
-            },
-            _o => None,
-        }
+        let _ = write!(c, "{} ", time_str);
     }
 
     fn draw_with_cursor<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
-        if let Some(header) = self.header() {
-            c.write(&header);
-            let start = c.get_col();
-            c.set_line_start_column(start);
-        }
-        c.set_wrapping_mode(WrappingMode::Wrap);
-
+        self.write_time(c);
         match self.0 {
             crate::timeline::Event::Message(e) => match e {
-                AnySyncMessageEvent::RoomMessage(msg) => match &msg.content.msgtype {
-                    MessageType::Text(text) => c.write(&text.body),
-                    MessageType::Image(img) => {
-                        c.set_style_modifier(StyleModifier::new().italic(true));
-                        let _ = write!(c, "sent an image ({})", img.body);
+                AnySyncMessageEvent::RoomMessage(msg) => {
+                    write_user(c, &msg.sender, self.2);
+                    c.set_wrapping_mode(WrappingMode::Wrap);
+                    match &msg.content.msgtype {
+                        MessageType::Text(text) => {
+                            let _ = write!(c, ": ");
+                            let start = c.get_col();
+                            c.set_line_start_column(start);
+                            let _ = write!(c, "{}", &text.body);
+                        }
+                        MessageType::Image(img) => {
+                            c.set_style_modifier(StyleModifier::new().italic(true));
+                            let _ = write!(c, " sent an image ({})", img.body);
+                        }
+                        MessageType::File(f) => {
+                            c.set_style_modifier(StyleModifier::new().italic(true));
+                            let _ = write!(c, "sent a file ({})", f.body);
+                        }
+                        o => {
+                            let _ = write!(c, "Other message {:?}", o);
+                        }
                     }
-                    MessageType::File(f) => {
-                        c.set_style_modifier(StyleModifier::new().italic(true));
-                        let _ = write!(c, "sent a file ({})", f.body);
-                    }
-                    o => {
-                        let _ = write!(c, "Other message {:?}", o);
-                    }
-                },
+                }
                 AnySyncMessageEvent::RoomEncrypted(_msg) => {
                     c.write("*Unable to decrypt message*");
                 }
