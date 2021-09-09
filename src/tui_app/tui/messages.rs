@@ -304,24 +304,12 @@ impl TuiEvent<'_> {
                 AnySyncMessageEvent::RoomMessage(msg) => match &msg.content.msgtype {
                     MessageType::Text(text) => c.write(&text.body),
                     MessageType::Image(img) => {
-                        let _ = write!(
-                            c,
-                            "sent {} image ({})",
-                            if img.url.is_none() {
-                                "an encrypted"
-                            } else {
-                                "an"
-                            },
-                            img.body
-                        );
+                        c.set_style_modifier(StyleModifier::new().italic(true));
+                        let _ = write!(c, "sent an image ({})", img.body);
                     }
                     MessageType::File(f) => {
-                        let _ = write!(
-                            c,
-                            "sent {} file ({})",
-                            if f.url.is_none() { "an encrypted" } else { "a" },
-                            f.body
-                        );
+                        c.set_style_modifier(StyleModifier::new().italic(true));
+                        let _ = write!(c, "sent a file ({})", f.body);
                     }
                     o => {
                         let _ = write!(c, "Other message {:?}", o);
