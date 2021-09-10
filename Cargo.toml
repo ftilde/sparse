@@ -37,9 +37,9 @@ tempfile = "3.2"
 [dependencies.matrix-sdk]
 #git = "https://github.com/matrix-org/matrix-rust-sdk"
 #rev = "ee40d917d1f20230de3ad368df7fda17cda66deb"
-git = "https://github.com/jsparber/matrix-rust-sdk"
-rev = "153e87e197e38def344e2f05f5e0685490c5f0b6"
-#path = "../matrix-rust-sdk-fork/matrix_sdk"
+git = "https://github.com/ftilde/matrix-rust-sdk"
+branch = "messages-api"
+#path = "../matrix-rust-sdk/matrix_sdk"
 #default-features = false
 #features = ["encryption", "sled_cryptostore", "require_auth_for_profile_requests", "native-tls", "sled_state_store"]
 
