@@ -343,7 +343,20 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
 
     // Fetch the initial list of rooms. This is required (for some reason) because joined_rooms()
     // returns an empty vec on the first start for some reason.
-    client.sync_once(SyncSettings::new()).await?;
+    //
+    // Also: We have to enable lazy loading of members because otherwise the calculation of room
+    // display names is broken. (There is a note about that in the implementation in matrix_sdk...)
+    use matrix_sdk::ruma::api::client::r0::filter::{FilterDefinition, LazyLoadOptions};
+    use matrix_sdk::ruma::api::client::r0::sync::sync_events::Filter;
+    client
+        .sync_once(SyncSettings::new().filter({
+            let mut filter_def = FilterDefinition::empty();
+            filter_def.room.state.lazy_load_options = LazyLoadOptions::Enabled {
+                include_redundant_members: false,
+            };
+            Filter::FilterDefinition(filter_def)
+        }))
+        .await?;
     let mut rooms = BTreeMap::new();
     for room in client.joined_rooms() {
         let id = room.room_id();
