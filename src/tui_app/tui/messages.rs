@@ -270,7 +270,10 @@ fn write_user<T: unsegen::base::CursorTarget>(
     user_id: &UserId,
     state: &crate::tui_app::RoomState,
 ) {
-    let color = state.user_colors.get(user_id).unwrap();
+    // The user color map is automatically updated when users join a room. Howevery, as this
+    // happens asyncronously, rendering of new events may happen beforehand. Hence we need a
+    // (temporary in any case) fallback here.
+    let color = state.user_colors.get(user_id).unwrap_or(&Color::Default);
     let mut c = c.save().style_modifier();
     c.set_style_modifier(StyleModifier::new().fg_color(*color).bold(true));
     let _ = write!(c, "{}", user_id.as_str());
