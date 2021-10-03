@@ -24,6 +24,7 @@ use tokio::sync::{mpsc, watch, Mutex};
 use tui::Event;
 use unsegen::base::Color;
 
+mod config;
 mod tui;
 type UserColors = BTreeMap<UserId, Color>;
 

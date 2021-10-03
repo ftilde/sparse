@@ -62,7 +62,7 @@ pub enum MessageSelection {
 
 struct RoomState {
     id: RoomId,
-    msg_edit: PromptLine,
+    pub msg_edit: PromptLine,
     msg_edit_type: SendMessageType,
     selection: MessageSelection,
 }
@@ -181,7 +181,7 @@ impl TuiState {
             .as_ref()
             .map(|r| self.rooms.get(r).unwrap())
     }
-    fn current_room_state_mut(&mut self) -> Option<&mut RoomState> {
+    pub fn current_room_state_mut(&mut self) -> Option<&mut RoomState> {
         if let Some(id) = self.current_room.as_ref() {
             Some(self.rooms.get_mut(id).unwrap())
         } else {
@@ -445,5 +445,151 @@ pub async fn run_tui(
                 }
             }
         }
+    }
+}
+
+struct CommandContext<'a> {
+    client: &'a Client,
+    state: &'a mut State,
+    tui_state: &'a mut TuiState,
+    tasks: Tasks<'a>,
+    continue_running: bool,
+}
+
+fn enter_mode(c: &mut CommandContext, mode: Mode) -> Result<(), String> {
+    c.tui_state.mode = mode;
+    Ok(())
+}
+
+// Command functions
+
+fn send_message(c: &mut CommandContext) -> Result<(), String> {
+    if let Some(room) = c.tui_state.current_room_state_mut() {
+        room.send_current_message(&c.client);
+        Ok(())
+    } else {
+        Err("No current room".to_owned())
+    }
+}
+
+fn enter_normal_mode(c: &mut CommandContext) -> Result<(), String> {
+    enter_mode(c, Mode::Normal)
+}
+
+fn enter_insert_mode(c: &mut CommandContext) -> Result<(), String> {
+    enter_mode(c, Mode::LineInsert)
+}
+
+fn enter_insert_room_filter_unread(c: &mut CommandContext) -> Result<(), String> {
+    enter_mode(c, Mode::RoomFilterUnread(LineEdit::new()))
+}
+
+fn enter_insert_room_filter(c: &mut CommandContext) -> Result<(), String> {
+    enter_mode(c, Mode::RoomFilter(LineEdit::new()))
+}
+
+fn select_next_message(c: &mut CommandContext) -> Result<(), String> {
+    messages::MessagesMut(c.state, c.tui_state).scroll_forwards();
+    Ok(())
+}
+
+fn select_prev_message(c: &mut CommandContext) -> Result<(), String> {
+    messages::MessagesMut(c.state, c.tui_state).scroll_backwards();
+    Ok(())
+}
+
+fn deselect_message(c: &mut CommandContext) -> Result<(), String> {
+    messages::MessagesMut(c.state, c.tui_state).scroll_to_end();
+    Ok(())
+}
+
+fn select_next_room(c: &mut CommandContext) -> Result<(), String> {
+    rooms::RoomsMut(c.state, c.tui_state).scroll_forwards();
+    Ok(())
+}
+
+fn select_prev_room(c: &mut CommandContext) -> Result<(), String> {
+    rooms::RoomsMut(c.state, c.tui_state).scroll_backwards();
+    Ok(())
+}
+
+fn quit(c: &mut CommandContext) -> Result<(), String> {
+    c.continue_running = false;
+    Ok(())
+}
+
+fn start_reply(c: &mut CommandContext) -> Result<(), String> {
+    if let Some(id) = &c.tui_state.current_room {
+        if let Some(room) = c.state.rooms.get(id) {
+            let tui_room = c.tui_state.current_room_state_mut().unwrap();
+            if let MessageSelection::Specific(eid) = &tui_room.selection {
+                if let Some(crate::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(
+                    msg,
+                ))) = room.messages.message_from_id(&eid)
+                {
+                    tui_room.msg_edit_type = SendMessageType::Reply(msg.clone());
+                    tui_room.selection = MessageSelection::Newest;
+                    Ok(())
+                } else {
+                    Err(format!("Cannot find message with id {:?}", eid))
+                }
+            } else {
+                Err("No room selected".to_owned())
+            }
+        } else {
+            Err("No room state".to_owned())
+        }
+    } else {
+        Err("No current room".to_owned())
+    }
+}
+
+fn cancel_reply(c: &mut CommandContext) -> Result<(), String> {
+    if let Some(tui_room) = c.tui_state.current_room_state_mut() {
+        tui_room.msg_edit_type = SendMessageType::Simple;
+        Ok(())
+    } else {
+        Err("No current room".to_owned())
+    }
+}
+
+fn clear_message(c: &mut CommandContext) -> Result<(), String> {
+    if let Some(room) = c.tui_state.current_room_state_mut() {
+        room.msg_edit.clear();
+        Ok(())
+    } else {
+        Err("No current room".to_owned())
+    }
+}
+
+fn open_selected_message(c: &mut CommandContext) -> Result<(), String> {
+    if let Some(r) = c.tui_state.current_room_state_mut() {
+        match &r.selection {
+            MessageSelection::Newest => Err("No message selected".to_owned()),
+            MessageSelection::Specific(eid) => {
+                if let Some(crate::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(
+                    msg,
+                ))) = c
+                    .state
+                    .rooms
+                    .get(&r.id)
+                    .unwrap()
+                    .messages
+                    .message_from_id(&eid)
+                {
+                    match &msg.content.msgtype {
+                        MessageType::Image(img) => {
+                            open_file(c.client.clone(), img.clone());
+                            Ok(())
+                        }
+                        o => Err(format!("No open action for message {:?}", o)),
+                    }
+                } else {
+                    Err("No message selected".to_owned())
+                }
+            }
+        }
+    } else {
+        Err("No current room".to_owned())
     }
 }
