@@ -5,28 +5,29 @@ use std::io::stdout;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 use unsegen::base::*;
-use unsegen::input::{EditBehavior, Editable, Input, Key, ScrollBehavior, Scrollable};
+use unsegen::input::{EditBehavior, Editable, Input, Key};
 use unsegen::widget::builtin::*;
 use unsegen::widget::*;
 
 use matrix_sdk::ruma::{
     events::{
         room::message::{MessageEventContent, MessageType},
-        AnySyncMessageEvent, SyncMessageEvent,
+        SyncMessageEvent,
     },
     identifiers::{EventId, RoomId},
 };
 
+use crate::config::{Config, KeyMapFunctionResult, Keys};
 use crate::timeline::MessageQuery;
 use crate::tui_app::State;
 
 use nix::sys::signal;
 
-mod messages;
-mod rooms;
+pub mod actions;
+pub mod messages;
+pub mod rooms;
 
 const DRAW_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(16);
-const OPEN_PROG: &str = "xdg-open";
 
 #[allow(dead_code)]
 pub enum NotificationStyle {
@@ -83,21 +84,6 @@ impl Tasks<'_> {
         *q = Some(MessageQueryRequest { room, kind: query });
     }
 }
-enum Mode {
-    LineInsert,
-    Normal,
-    RoomFilter(LineEdit),
-    RoomFilterUnread(LineEdit),
-}
-
-impl Mode {
-    fn room_filter_string(&self) -> &str {
-        match self {
-            Mode::RoomFilter(l) | Mode::RoomFilterUnread(l) => l.get(),
-            _ => "",
-        }
-    }
-}
 
 pub enum MessageSelection {
     Newest,
@@ -106,7 +92,7 @@ pub enum MessageSelection {
 
 struct RoomState {
     id: RoomId,
-    msg_edit: PromptLine,
+    pub msg_edit: PromptLine,
     msg_edit_type: SendMessageType,
     selection: MessageSelection,
 }
@@ -120,7 +106,7 @@ impl RoomState {
             selection: MessageSelection::Newest,
         }
     }
-    fn send_current_message(&mut self, c: &Client) {
+    pub fn send_current_message(&mut self, c: &Client) {
         let msg = self.msg_edit.get().to_owned();
         if !msg.is_empty() {
             self.msg_edit.clear().unwrap();
@@ -159,46 +145,41 @@ fn send_read_receipt(c: &Client, rid: RoomId, eid: EventId) {
     }
 }
 
-fn open_file(c: Client, content: impl matrix_sdk::media::MediaEventContent + Send) {
-    if let Some(media_type) = content.file() {
-        tokio::spawn(async move {
-            match c
-                .get_media_content(
-                    &matrix_sdk::media::MediaRequest {
-                        media_type,
-                        format: matrix_sdk::media::MediaFormat::File,
-                    },
-                    true,
-                )
-                .await
-            {
-                Ok(bytes) => {
-                    let path = {
-                        use std::io::Write;
-                        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
-                        tmpfile.write_all(&bytes[..]).unwrap();
-                        tmpfile.flush().unwrap();
-                        tmpfile.into_temp_path()
-                    };
-                    let mut join_handle = tokio::process::Command::new(OPEN_PROG)
-                        .arg(&path)
-                        .spawn()
-                        .unwrap();
-                    join_handle.wait().await.unwrap();
-                    path.keep().unwrap(); //We don't know if the file was opened when xdg-open finished...
-                }
-                Err(e) => tracing::error!("can't open file: {:?}", e),
-            }
-        });
-    } else {
-        tracing::error!("can't open file: No content");
-    }
-}
-
 pub struct TuiState {
     current_room: Option<RoomId>,
     rooms: BTreeMap<RoomId, RoomState>,
     mode: Mode,
+    room_filter_line: LineEdit,
+    previous_keys: Keys,
+    last_error_message: Option<String>,
+}
+
+fn key_action_behavior<'a>(
+    c: &'a mut actions::CommandContext<'a>,
+    config: &'a Config,
+) -> impl unsegen::input::Behavior + 'a {
+    move |input: Input| -> Option<Input> {
+        let mut new_keys = Keys(Vec::new());
+        if let unsegen::input::Event::Key(k) = input.event {
+            c.tui_state.previous_keys.0.push(k);
+        } else {
+            return Some(input);
+        }
+        std::mem::swap(&mut new_keys, &mut c.tui_state.previous_keys);
+        match config.find_action(&c.tui_state.mode, &new_keys) {
+            KeyMapFunctionResult::IsPrefix(_) => {
+                c.tui_state.previous_keys = new_keys;
+                None
+            }
+            KeyMapFunctionResult::Found(action) => {
+                if let Err(e) = config.run_action(action, c) {
+                    c.tui_state.last_error_message = Some(format!("{}", e));
+                }
+                None
+            }
+            KeyMapFunctionResult::NotFound => Some(input),
+        }
+    }
 }
 
 impl TuiState {
@@ -206,10 +187,21 @@ impl TuiState {
         let mut s = TuiState {
             rooms: BTreeMap::new(),
             current_room: None,
-            mode: Mode::Normal,
+            mode: Mode::default(),
+            room_filter_line: LineEdit::new(),
+            previous_keys: Keys(Vec::new()),
+            last_error_message: None,
         };
         s.set_current_room(current_room);
         s
+    }
+    fn enter_mode(&mut self, mode: Mode) {
+        if !matches!(mode, Mode::RoomFilter | Mode::RoomFilterUnread)
+            && matches!(self.mode, Mode::RoomFilter | Mode::RoomFilterUnread)
+        {
+            let _ = self.room_filter_line.clear();
+        }
+        self.mode = mode;
     }
     fn set_current_room(&mut self, id: Option<RoomId>) {
         if let Some(id) = &id {
@@ -252,21 +244,22 @@ fn msg_edit<'a>(room_state: &'a RoomState, potentially_active: bool) -> impl Wid
 }
 
 fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl Widget + 'a {
-    let mut layout = HLayout::new()
+    let mut hlayout = HLayout::new()
         .separator(GraphemeCluster::try_from('│').unwrap())
         .widget_weighted(rooms::Rooms(state, tui_state).as_widget(), 0.25);
     if let Some(current) = tui_state.current_room_state() {
-        layout = layout.widget_weighted(
+        hlayout = hlayout.widget_weighted(
             VLayout::new()
                 .widget(messages::Messages(state, tui_state, tasks))
-                .widget(msg_edit(
-                    current,
-                    matches!(tui_state.mode, Mode::LineInsert),
-                )),
+                .widget(msg_edit(current, matches!(tui_state.mode, Mode::Insert))),
             0.75,
         )
     }
-    layout
+    let mut vlayout = VLayout::new().widget(hlayout);
+    if let Some(msg) = &tui_state.last_error_message {
+        vlayout = vlayout.widget(msg)
+    }
+    vlayout
 }
 
 #[derive(Debug)]
@@ -293,6 +286,7 @@ pub async fn run_tui(
     message_query_sink: watch::Sender<Option<MessageQueryRequest>>,
     state: Arc<Mutex<State>>,
     client: Client,
+    config: Config,
 ) {
     let stdout = stdout();
     let mut term = Terminal::new(stdout.lock()).unwrap();
@@ -356,127 +350,36 @@ pub async fn run_tui(
                         .on_default::<unsegen_signals::SIGTSTP>();
                     let input = input.chain(sig_behavior);
 
-                    let input = input.chain((Key::Esc, || {
-                        if let Mode::Normal = tui_state.mode {
-                            tui_state
-                                .current_room_state_mut()
-                                .map(|tui_room| tui_room.selection = MessageSelection::Newest);
-                        } else {
-                            tui_state.mode = Mode::Normal
-                        }
-                    }));
-
                     let mut state = state.lock().await;
+
+                    let mut c = actions::CommandContext {
+                        tui_state: &mut tui_state,
+                        state: &mut state,
+                        client: &client,
+                        tasks,
+                        continue_running: &mut run,
+                    };
+                    let input = input.chain(key_action_behavior(&mut c, &config));
                     match &mut tui_state.mode {
-                        Mode::Normal => input
-                            .chain((Key::Char('q'), || run = false))
-                            .chain((Key::Char('i'), || tui_state.mode = Mode::LineInsert))
-                            .chain((Key::Char('o'), || {
-                                tui_state.mode = Mode::RoomFilter(LineEdit::new())
-                            }))
-                            .chain((Key::Char('O'), || {
-                                tui_state.mode = Mode::RoomFilterUnread(LineEdit::new())
-                            }))
-                            .chain((Key::Char('r'), || {
-                                if let Some(id) = &tui_state.current_room {
-                                    if let Some(room) = state.rooms.get(id) {
-                                        let tui_room = tui_state.current_room_state_mut().unwrap();
-                                        if let MessageSelection::Specific(eid) = &tui_room.selection
-                                        {
-                                            if let Some(crate::timeline::Event::Message(
-                                                AnySyncMessageEvent::RoomMessage(msg),
-                                            )) = room.messages.message_from_id(eid)
-                                            {
-                                                tui_room.msg_edit_type =
-                                                    SendMessageType::Reply(msg.clone());
-                                                tui_room.selection = MessageSelection::Newest;
-                                            }
-                                        }
-                                    }
-                                }
-                                tui_state.mode = Mode::LineInsert;
-                            }))
-                            .chain(
-                                ScrollBehavior::new(&mut rooms::RoomsMut(
-                                    &mut state,
-                                    &mut tui_state,
-                                ))
-                                .forwards_on(Key::Char('n'))
-                                .backwards_on(Key::Char('p')),
-                            )
-                            .chain(
-                                ScrollBehavior::new(&mut messages::MessagesMut(
-                                    &state,
-                                    &mut tui_state,
-                                ))
-                                .forwards_on(Key::Char('j'))
-                                .backwards_on(Key::Char('k'))
-                                .to_end_on(Key::Ctrl('g')),
-                            )
-                            .chain((Key::Char('\n'), || {
-                                tui_state
-                                    .current_room_state_mut()
-                                    .map(|r| match &r.selection {
-                                        MessageSelection::Newest => {
-                                            r.send_current_message(&client);
-                                        }
-                                        MessageSelection::Specific(eid) => {
-                                            if let Some(crate::timeline::Event::Message(
-                                                AnySyncMessageEvent::RoomMessage(msg),
-                                            )) = state
-                                                .rooms
-                                                .get(&r.id)
-                                                .unwrap()
-                                                .messages
-                                                .message_from_id(&eid)
-                                            {
-                                                match &msg.content.msgtype {
-                                                    MessageType::Image(img) => {
-                                                        open_file(client.clone(), img.clone());
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
-                                        }
-                                    });
-                            })),
-                        Mode::LineInsert => {
+                        Mode::Normal => {}
+                        Mode::Insert => {
                             if let Some(room) = tui_state.current_room_state_mut() {
-                                input
-                                    .chain(
-                                        EditBehavior::new(&mut room.msg_edit)
-                                            .delete_forwards_on(Key::Delete)
-                                            .delete_backwards_on(Key::Backspace)
-                                            .clear_on(Key::Ctrl('c')),
-                                    )
-                                    .chain((Key::Char('\n'), || {
-                                        room.send_current_message(&client);
-                                    }))
+                                input.chain(
+                                    EditBehavior::new(&mut room.msg_edit)
+                                        .delete_forwards_on(Key::Delete)
+                                        .delete_backwards_on(Key::Backspace),
+                                )
                             } else {
                                 input
-                            }
+                            };
                         }
-                        Mode::RoomFilter(lineedit) | Mode::RoomFilterUnread(lineedit) => input
-                            .chain(
-                                EditBehavior::new(lineedit)
+                        Mode::RoomFilter | Mode::RoomFilterUnread => {
+                            input.chain(
+                                EditBehavior::new(&mut tui_state.room_filter_line)
                                     .delete_forwards_on(Key::Delete)
                                     .delete_backwards_on(Key::Backspace),
-                            )
-                            .chain(
-                                ScrollBehavior::new(&mut rooms::RoomsMut(
-                                    &mut state,
-                                    &mut tui_state,
-                                ))
-                                .forwards_on(Key::Ctrl('n'))
-                                .backwards_on(Key::Ctrl('p')),
-                            )
-                            .chain((Key::Char('\n'), || {
-                                let mut r = rooms::RoomsMut(&mut state, &mut tui_state);
-                                if !r.as_rooms().active_contains_current() {
-                                    let _ = r.scroll_forwards(); // Select first
-                                }
-                                tui_state.mode = Mode::Normal;
-                            })),
+                            );
+                        }
                     };
 
                     if let Some(id) = &tui_state.current_room {
@@ -489,5 +392,32 @@ pub async fn run_tui(
                 }
             }
         }
+    }
+}
+
+#[derive(Copy, Clone, Hash, PartialEq, Eq)]
+pub enum Mode {
+    Normal,
+    Insert,
+    //Visual,
+    RoomFilter,
+    RoomFilterUnread,
+}
+
+impl std::default::Default for Mode {
+    fn default() -> Self {
+        Mode::Normal
+    }
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Mode::Normal => "normal",
+            Mode::Insert => "insert",
+            Mode::RoomFilter => "roomfilter",
+            Mode::RoomFilterUnread => "roomfilterunread",
+        };
+        write!(f, "{}", s)
     }
 }

@@ -20,11 +20,11 @@ impl<'a> Rooms<'a> {
     fn active_rooms(
         self,
     ) -> impl DoubleEndedIterator<Item = (&'a RoomId, &'a crate::tui_app::RoomState)> {
-        let s = self.1.mode.room_filter_string();
+        let s = self.1.room_filter_line.get();
         let s_lower = s.to_lowercase();
         let mixed = s != s_lower;
         let rooms = self.all_rooms();
-        let only_with_unread = matches!(self.1.mode, Mode::RoomFilterUnread(_));
+        let only_with_unread = matches!(self.1.mode, Mode::RoomFilterUnread);
         rooms.filter(move |(_i, r)| {
             let passes_filter_string = if mixed {
                 r.name().contains(s)
@@ -48,8 +48,12 @@ impl<'a> Rooms<'a> {
     pub fn as_widget(self) -> impl Widget + 'a {
         let mut layout = VLayout::new();
 
-        if let Mode::RoomFilter(filter_line) | Mode::RoomFilterUnread(filter_line) = &self.1.mode {
-            layout = layout.widget(HLayout::new().widget("# ").widget(filter_line.as_widget()));
+        if let Mode::RoomFilter | Mode::RoomFilterUnread = &self.1.mode {
+            layout = layout.widget(
+                HLayout::new()
+                    .widget("# ")
+                    .widget(self.1.room_filter_line.as_widget()),
+            );
         };
         for (id, r) in self.active_rooms().into_iter() {
             layout = layout.widget(RoomSummary {

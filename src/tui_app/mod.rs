@@ -24,7 +24,8 @@ use tokio::sync::{mpsc, watch, Mutex};
 use tui::Event;
 use unsegen::base::Color;
 
-mod tui;
+pub mod tui;
+
 type UserColors = BTreeMap<UserId, Color>;
 
 async fn calculate_user_colors(room: &Room) -> UserColors {
@@ -334,7 +335,7 @@ pub fn init() {
     signals_to_block().thread_block().unwrap();
 }
 
-pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
+pub async fn run(client: Client, config: crate::config::Config) -> Result<(), matrix_sdk::Error> {
     let state = Arc::new(Mutex::new(State {
         rooms: BTreeMap::new(),
     }));
@@ -430,7 +431,14 @@ pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
     start_signal_thread(event_sender.clone());
     start_keyboard_thread(event_sender);
 
-    tui::run_tui(event_receiver, message_query_sender, state, tui_client).await;
+    tui::run_tui(
+        event_receiver,
+        message_query_sender,
+        state,
+        tui_client,
+        config,
+    )
+    .await;
 
     Ok(())
 }

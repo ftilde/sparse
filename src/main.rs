@@ -11,30 +11,16 @@ use url::Url;
 
 use std::path::PathBuf;
 
-impl Config {
-    fn user_id(&self) -> String {
-        format!("@{}:{}", self.user, self.host.host_str().unwrap_or(""))
-    }
-
-    fn data_dir(&self) -> PathBuf {
-        dirs::data_local_dir()
-            .unwrap()
-            .join(APP_NAME)
-            .join(self.user_id())
-    }
-
-    fn session_file_path(&self) -> PathBuf {
-        self.data_dir().join("session")
-    }
-}
+mod config;
+use config::Config;
 
 fn try_load_session(config: &Config) -> Result<Session, Box<dyn std::error::Error>> {
-    let session_file = std::fs::File::open(config.session_file_path())?; //TODO: encrypt?
+    let session_file = std::fs::File::open(config.session_file_path()?)?; //TODO: encrypt?
     Ok(serde_json::from_reader(session_file)?)
 }
 
 fn try_store_session(config: &Config, session: &Session) -> Result<(), Box<dyn std::error::Error>> {
-    let session_file_path = config.session_file_path();
+    let session_file_path = config.session_file_path()?;
     std::fs::create_dir_all(session_file_path.parent().unwrap())?;
     let session_file = std::fs::OpenOptions::new()
         .create(true)
@@ -60,17 +46,17 @@ async fn try_restore_session(
     Ok(())
 }
 
-async fn login(config: Config) -> Result<Client, matrix_sdk::Error> {
+async fn login(config: &Config) -> Result<Client, Box<dyn std::error::Error>> {
     // the location for `JsonStore` to save files to
-    let data_dir = config.data_dir();
+    let data_dir = config.data_dir()?;
     let client_config = ClientConfig::new().store_path(data_dir);
     // create a new Client with the given homeserver url and config
-    let client = Client::new_with_config(config.host.clone(), client_config).unwrap();
+    let client = Client::new_with_config(config.host()?.clone(), client_config).unwrap();
 
     if try_restore_session(&client, &config).await.is_err() {
         eprintln!(
             "Could not restore session. Please provide the password for user {} to log in:",
-            config.user
+            config.user()?
         );
 
         loop {
@@ -82,7 +68,7 @@ async fn login(config: Config) -> Result<Client, matrix_sdk::Error> {
                         device_name.push_str(&format!(" on {}", hostname.to_string_lossy()));
                     };
                     let response = client
-                        .login(&config.user, &pw, None, Some(&device_name))
+                        .login(&config.user()?, &pw, None, Some(&device_name))
                         .await;
                     match response {
                         Ok(response) => {
@@ -111,16 +97,8 @@ async fn login(config: Config) -> Result<Client, matrix_sdk::Error> {
             }
         }
     }
-    eprintln!("Logged in as {}", config.user);
+    eprintln!("Logged in as {}", config.user()?);
     Ok(client)
-}
-
-#[derive(StructOpt)]
-struct Config {
-    #[structopt(short = "h", long = "host")]
-    host: Url,
-    #[structopt(short = "u", long = "user")]
-    user: String,
 }
 
 #[derive(StructOpt, Clone)]
@@ -144,8 +122,12 @@ enum Command {
 #[derive(StructOpt)]
 #[structopt(author, about)]
 struct Options {
-    #[structopt(flatten)]
-    config: Config,
+    #[structopt(short = "h", long = "host")]
+    host: Option<Url>,
+    #[structopt(short = "u", long = "user")]
+    user: Option<String>,
+    #[structopt(short = "c", long = "config")]
+    config_file: Option<PathBuf>,
     #[structopt(subcommand)]
     command: Option<Command>,
 }
@@ -156,7 +138,7 @@ impl Options {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     let options = Options::from_args();
 
     // Perform the init before starting any threads. This is important for setup of signal
@@ -168,11 +150,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Then start the async runtime and root task
     use tokio::runtime::Runtime;
-    let rt = Runtime::new()?;
-    Ok(rt.block_on(tokio_main(options))?)
+    let rt = Runtime::new().unwrap();
+    if let Err(e) = rt.block_on(tokio_main(options)) {
+        eprintln!("{}", e);
+    }
 }
 
-async fn tokio_main(options: Options) -> Result<(), matrix_sdk::Error> {
+async fn tokio_main(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     //TODO: remove dirty dirty dirty hack with leak here
     let file = &*Box::leak(Box::new(std::fs::File::create("heyo.log").unwrap()));
     tracing_subscriber::fmt()
@@ -181,12 +165,44 @@ async fn tokio_main(options: Options) -> Result<(), matrix_sdk::Error> {
         .init();
 
     let command = options.command();
-    let client = login(options.config).await?;
+    let mut config = Config::new();
+
+    config.configure(include_str!("base_config.lua"))?;
+
+    let config_file = options.config_file.or({
+        let f = PathBuf::from(
+            dirs::config_dir()
+                .unwrap()
+                .join(crate::APP_NAME)
+                .join("config.lua"),
+        );
+        if f.exists() {
+            Some(f)
+        } else {
+            None
+        }
+    });
+    if let Some(config_file) = config_file {
+        let content = std::fs::read_to_string(config_file)?;
+        config.configure(&content)?;
+    }
+
+    if let Some(user) = options.user {
+        config.set_user(user);
+    }
+    if let Some(host) = options.host {
+        config.set_host(host);
+    }
+
+    let client = login(&config).await?;
 
     match command {
-        Command::Tui => tui_app::run(client).await,
-        Command::Devices => devices::run(client).await,
-        Command::VerifyInitiate(v) => verification_initiate::run(client, v.device_id.clone()).await,
-        Command::VerifyWait => verification_wait::run(client).await,
+        Command::Tui => tui_app::run(client, config).await?,
+        Command::Devices => devices::run(client).await?,
+        Command::VerifyInitiate(v) => {
+            verification_initiate::run(client, v.device_id.clone()).await?
+        }
+        Command::VerifyWait => verification_wait::run(client).await?,
     }
+    Ok(())
 }

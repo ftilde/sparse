@@ -33,6 +33,7 @@ structopt = "0.3"
 hostname = "0.3"
 notify-rust = "4.5"
 tempfile = "3.2"
+rlua = "0.17"
 
 [dependencies.matrix-sdk]
 #git = "https://github.com/matrix-org/matrix-rust-sdk"
