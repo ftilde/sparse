@@ -28,6 +28,50 @@ mod rooms;
 const DRAW_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(16);
 const OPEN_PROG: &str = "xdg-open";
 
+#[allow(dead_code)]
+pub enum NotificationStyle {
+    Disabled,
+    NameOnly,
+    NameAndGroup,
+    Full,
+}
+
+#[derive(Debug, Default)]
+pub struct Notification {
+    pub sender: String,
+    pub group: Option<String>,
+    pub content: String,
+}
+
+impl Notification {
+    pub fn notify(&self, style: NotificationStyle) {
+        let mut notification = notify_rust::Notification::new();
+        match style {
+            NotificationStyle::Disabled => return,
+            NotificationStyle::NameOnly => {
+                notification.summary(&format!("{}", self.sender));
+            }
+            NotificationStyle::NameAndGroup => {
+                notification.summary(&self.get_group_string());
+            }
+            NotificationStyle::Full => {
+                notification.summary(&self.get_group_string());
+                notification.body(&format!("{}", self.content));
+            }
+        }
+        if let Err(e) = notification.show() {
+            tracing::error!("Failed to show notification {}", e);
+        }
+    }
+
+    fn get_group_string(&self) -> String {
+        match &self.group {
+            Some(g) => format!("{} in {}", self.sender, g),
+            None => format!("{}", self.sender),
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 pub struct Tasks<'a> {
     message_query: &'a RefCell<Option<MessageQueryRequest>>,

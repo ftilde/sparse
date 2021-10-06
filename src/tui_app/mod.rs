@@ -220,38 +220,36 @@ impl EventHandler for Connection {
         {
             match notification.event.deserialize() {
                 Ok(e) => {
+                    let mut notification = tui::Notification::default();
                     if Some(e.sender()) != self.client.user_id().await.as_ref() {
-                        let mut notification = notify_rust::Notification::new();
+                        notification.sender = e.sender().to_string();
                         if room.is_direct() {
-                            notification.summary(e.sender().as_str());
+                            notification.group = None;
                         } else {
-                            notification.summary(&format!(
-                                "{} in {}",
-                                e.sender().as_str(),
+                            notification.group = Some(
                                 room.display_name()
                                     .await
-                                    .unwrap_or_else(|_| "Unknown room".to_owned())
-                            ));
+                                    .unwrap_or_else(|_| "Unknown room".to_owned()),
+                            );
                         }
                         match e {
                             AnySyncRoomEvent::Message(m) => match m {
                                 AnySyncMessageEvent::RoomMessage(m) => match m.content.msgtype {
                                     MessageType::Text(t) => {
-                                        notification.body(&t.body);
+                                        notification.content = t.body;
                                     }
-                                    o => {
-                                        notification.body(&format!("{:?}", o));
+                                    MessageType::Image(_) => {
+                                        notification.content = String::from("sent an image");
                                     }
+                                    o => notification.content = format!("{:?}", o),
                                 },
-                                o => {
-                                    notification.body(&format!("{:?}", o));
-                                }
+                                o => notification.content = format!("{:?}", o),
                             },
                             _ => {}
                         }
-                        if let Err(e) = notification.show() {
-                            tracing::error!("Failed to show notification {}", e);
-                        }
+
+                        // TODO: replace the argument with value from config
+                        notification.notify(tui::NotificationStyle::Full);
                     }
                 }
                 Err(e) => tracing::error!("can't deserialize event from notification: {:?}", e),
