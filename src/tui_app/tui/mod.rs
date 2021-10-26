@@ -17,7 +17,7 @@ use matrix_sdk::ruma::{
     identifiers::{EventId, RoomId},
 };
 
-use crate::config::{Config, KeyMapFunctionResult, Keys};
+use crate::config::{KeyMapFunctionResult, KeyMapping, Keys};
 use crate::timeline::MessageQuery;
 use crate::tui_app::State;
 
@@ -28,50 +28,6 @@ pub mod messages;
 pub mod rooms;
 
 const DRAW_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(16);
-
-#[allow(dead_code)]
-pub enum NotificationStyle {
-    Disabled,
-    NameOnly,
-    NameAndGroup,
-    Full,
-}
-
-#[derive(Debug, Default)]
-pub struct Notification {
-    pub sender: String,
-    pub group: Option<String>,
-    pub content: String,
-}
-
-impl Notification {
-    pub fn notify(&self, style: NotificationStyle) {
-        let mut notification = notify_rust::Notification::new();
-        match style {
-            NotificationStyle::Disabled => return,
-            NotificationStyle::NameOnly => {
-                notification.summary(&format!("{}", self.sender));
-            }
-            NotificationStyle::NameAndGroup => {
-                notification.summary(&self.get_group_string());
-            }
-            NotificationStyle::Full => {
-                notification.summary(&self.get_group_string());
-                notification.body(&format!("{}", self.content));
-            }
-        }
-        if let Err(e) = notification.show() {
-            tracing::error!("Failed to show notification {}", e);
-        }
-    }
-
-    fn get_group_string(&self) -> String {
-        match &self.group {
-            Some(g) => format!("{} in {}", self.sender, g),
-            None => format!("{}", self.sender),
-        }
-    }
-}
 
 #[derive(Copy, Clone)]
 pub struct Tasks<'a> {
@@ -156,7 +112,7 @@ pub struct TuiState {
 
 fn key_action_behavior<'a>(
     c: &'a mut actions::CommandContext<'a>,
-    config: &'a Config,
+    config: &'a KeyMapping,
 ) -> impl unsegen::input::Behavior + 'a {
     move |input: Input| -> Option<Input> {
         let mut new_keys = Keys(Vec::new());
@@ -286,7 +242,7 @@ pub async fn run_tui(
     message_query_sink: watch::Sender<Option<MessageQueryRequest>>,
     state: Arc<Mutex<State>>,
     client: Client,
-    config: Config,
+    key_mapping: KeyMapping,
 ) {
     let stdout = stdout();
     let mut term = Terminal::new(stdout.lock()).unwrap();
@@ -359,7 +315,7 @@ pub async fn run_tui(
                         tasks,
                         continue_running: &mut run,
                     };
-                    let input = input.chain(key_action_behavior(&mut c, &config));
+                    let input = input.chain(key_action_behavior(&mut c, &key_mapping));
                     match &mut tui_state.mode {
                         Mode::Normal => {}
                         Mode::Insert => {

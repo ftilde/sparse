@@ -12,7 +12,7 @@ use url::Url;
 use std::path::PathBuf;
 
 mod config;
-use config::Config;
+use config::{Config, ConfigBuilder};
 
 fn try_load_session(config: &Config) -> Result<Session, Box<dyn std::error::Error>> {
     let session_file = std::fs::File::open(config.session_file_path()?)?; //TODO: encrypt?
@@ -51,12 +51,12 @@ async fn login(config: &Config) -> Result<Client, Box<dyn std::error::Error>> {
     let data_dir = config.data_dir()?;
     let client_config = ClientConfig::new().store_path(data_dir);
     // create a new Client with the given homeserver url and config
-    let client = Client::new_with_config(config.host()?.clone(), client_config).unwrap();
+    let client = Client::new_with_config(config.host.clone(), client_config).unwrap();
 
     if try_restore_session(&client, &config).await.is_err() {
         eprintln!(
             "Could not restore session. Please provide the password for user {} to log in:",
-            config.user()?
+            config.user
         );
 
         loop {
@@ -68,7 +68,7 @@ async fn login(config: &Config) -> Result<Client, Box<dyn std::error::Error>> {
                         device_name.push_str(&format!(" on {}", hostname.to_string_lossy()));
                     };
                     let response = client
-                        .login(&config.user()?, &pw, None, Some(&device_name))
+                        .login(&config.user, &pw, None, Some(&device_name))
                         .await;
                     match response {
                         Ok(response) => {
@@ -97,7 +97,7 @@ async fn login(config: &Config) -> Result<Client, Box<dyn std::error::Error>> {
             }
         }
     }
-    eprintln!("Logged in as {}", config.user()?);
+    eprintln!("Logged in as {}", config.user);
     Ok(client)
 }
 
@@ -165,7 +165,7 @@ async fn tokio_main(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         .init();
 
     let command = options.command();
-    let mut config = Config::new();
+    let mut config = ConfigBuilder::new();
 
     config.configure(include_str!("base_config.lua"))?;
 
@@ -194,10 +194,12 @@ async fn tokio_main(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         config.set_host(host);
     }
 
+    let (config, key_mapping) = config.finalize()?;
+
     let client = login(&config).await?;
 
     match command {
-        Command::Tui => tui_app::run(client, config).await?,
+        Command::Tui => tui_app::run(client, config, key_mapping).await?,
         Command::Devices => devices::run(client).await?,
         Command::VerifyInitiate(v) => {
             verification_initiate::run(client, v.device_id.clone()).await?

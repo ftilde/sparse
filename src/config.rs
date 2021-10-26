@@ -182,38 +182,55 @@ impl rlua::FromLua<'_> for Mode {
     }
 }
 
+#[derive(Copy, Clone)]
+pub enum NotificationStyle {
+    Disabled,
+    NameOnly,
+    NameAndGroup,
+    Full,
+}
+
+impl std::default::Default for NotificationStyle {
+    fn default() -> Self {
+        NotificationStyle::Full
+    }
+}
+
+impl rlua::FromLua<'_> for NotificationStyle {
+    fn from_lua(lua_value: rlua::Value<'_>, _lua: rlua::Context<'_>) -> rlua::Result<Self> {
+        if let rlua::Value::String(s) = lua_value {
+            match s.to_str()? {
+                "disabled" => Ok(NotificationStyle::Disabled),
+                "nameonly" => Ok(NotificationStyle::NameOnly),
+                "nameandgroup" => Ok(NotificationStyle::NameAndGroup),
+                "full" => Ok(NotificationStyle::Full),
+                s => Err(rlua::Error::RuntimeError(format!(
+                    "'{}' is not a valid notification style",
+                    s
+                ))),
+            }
+        } else {
+            Err(rlua::Error::RuntimeError(format!(
+                "'{:?}' is not a valid notification style",
+                lua_value
+            )))
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct Config {
-    keymaps: HashMap<Mode, KeyMap>,
-    host: Option<Url>,
-    user: Option<String>,
-    lua: Lua,
+    pub host: Url,
+    pub user: String,
+    pub notification_style: NotificationStyle,
 }
 
 impl Config {
-    pub fn new() -> Config {
-        Config {
-            keymaps: HashMap::new(),
-            lua: Lua::new(),
-            host: None,
-            user: None,
-        }
-    }
-    pub fn host(&self) -> Result<&Url, String> {
-        self.host
-            .as_ref()
-            .ok_or_else(|| "Host not configured.".to_owned())
-    }
-    pub fn user(&self) -> Result<&str, String> {
-        self.user
-            .as_ref()
-            .map(|u| u.as_str())
-            .ok_or_else(|| "User not configured.".to_owned())
-    }
     pub fn user_id(&self) -> Result<String, Box<dyn Error>> {
         Ok(format!(
             "@{}:{}",
-            self.user()?,
-            self.host()?
+            self.user,
+            self.host
                 .host_str()
                 .ok_or_else(|| "Configured host is not a valid string".to_owned())?
         ))
@@ -229,6 +246,68 @@ impl Config {
     pub fn session_file_path(&self) -> Result<PathBuf, Box<dyn Error>> {
         Ok(self.data_dir()?.join("session"))
     }
+}
+
+pub struct KeyMapping {
+    keymaps: HashMap<Mode, KeyMap>,
+    lua: Lua,
+}
+
+impl KeyMapping {
+    pub fn find_action<'a>(&'a self, mode: &Mode, keys: &Keys) -> KeyMapFunctionResult<'a> {
+        self.keymaps
+            .get(&mode)
+            .map(|keymap| keymap.find(keys))
+            .unwrap_or(KeyMapFunctionResult::NotFound)
+    }
+    pub fn run_action<'a>(
+        &'a self,
+        action: KeyAction<'a>,
+        c: &mut CommandContext,
+    ) -> rlua::Result<()> {
+        self.lua.context(|lua_ctx| {
+            lua_ctx.scope(|scope| {
+                let c = scope.create_nonstatic_userdata(c)?;
+                let action: rlua::Function = lua_ctx.registry_value(action.0).unwrap();
+                action.call::<_, ()>(c)
+            })
+        })
+    }
+}
+pub struct ConfigBuilder {
+    keymaps: HashMap<Mode, KeyMap>,
+    host: Option<Url>,
+    user: Option<String>,
+    notification_style: NotificationStyle,
+    lua: Lua,
+}
+
+impl ConfigBuilder {
+    pub fn new() -> ConfigBuilder {
+        ConfigBuilder {
+            keymaps: HashMap::new(),
+            lua: Lua::new(),
+            host: None,
+            user: None,
+            notification_style: NotificationStyle::default(),
+        }
+    }
+    pub fn finalize(self) -> Result<(Config, KeyMapping), String> {
+        Ok((
+            Config {
+                host: self
+                    .host
+                    .ok_or_else(|| "Host not configured.".to_owned())?
+                    .to_owned(),
+                user: self.user.ok_or_else(|| "User not configured.".to_owned())?,
+                notification_style: self.notification_style,
+            },
+            KeyMapping {
+                keymaps: self.keymaps,
+                lua: self.lua,
+            },
+        ))
+    }
     pub fn set_host(&mut self, host: Url) {
         self.host = Some(host);
     }
@@ -236,12 +315,15 @@ impl Config {
         self.user = Some(user);
     }
     pub fn configure(&mut self, source: &str) -> rlua::Result<()> {
+        //TODO maybe we can avoid these bindings with disjoint struct capturing in 2021 edition?
         let keymaps = std::cell::RefCell::new(&mut self.keymaps);
         let host = &mut self.host;
         let user = &mut self.user;
+        let notification_style = &mut self.notification_style;
         self.lua.context(|lua_ctx| {
             lua_ctx.scope(|scope| {
                 let globals = lua_ctx.globals();
+
                 globals.set(
                     "bind",
                     scope.create_function_mut(
@@ -299,6 +381,14 @@ impl Config {
                     })?,
                 )?;
 
+                globals.set(
+                    "notification_style",
+                    scope.create_function_mut(|_lua_ctx, style: NotificationStyle| {
+                        *notification_style = style;
+                        Ok(())
+                    })?,
+                )?;
+
                 // Define a shortcut binding for all methods of CommandContext
                 for (n, _) in ACTIONS {
                     lua_ctx
@@ -308,25 +398,6 @@ impl Config {
 
                 lua_ctx.load(source).eval()?;
                 Ok(())
-            })
-        })
-    }
-    pub fn find_action<'a>(&'a self, mode: &Mode, keys: &Keys) -> KeyMapFunctionResult<'a> {
-        self.keymaps
-            .get(&mode)
-            .map(|keymap| keymap.find(keys))
-            .unwrap_or(KeyMapFunctionResult::NotFound)
-    }
-    pub fn run_action<'a>(
-        &'a self,
-        action: KeyAction<'a>,
-        c: &mut CommandContext,
-    ) -> rlua::Result<()> {
-        self.lua.context(|lua_ctx| {
-            lua_ctx.scope(|scope| {
-                let c = scope.create_nonstatic_userdata(c)?;
-                let action: rlua::Function = lua_ctx.registry_value(action.0).unwrap();
-                action.call::<_, ()>(c)
             })
         })
     }

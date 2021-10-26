@@ -149,6 +149,7 @@ struct Connection {
     client: Client,
     state: Arc<Mutex<State>>,
     events: Arc<Mutex<mpsc::Sender<tui::Event>>>,
+    config: crate::config::Config,
 }
 
 impl Connection {
@@ -219,38 +220,50 @@ impl EventHandler for Connection {
             .iter()
             .any(|t| matches!(t, matrix_sdk::ruma::push::Action::Notify))
         {
+            use crate::config::NotificationStyle;
             match notification.event.deserialize() {
                 Ok(e) => {
-                    let mut notification = tui::Notification::default();
                     if Some(e.sender()) != self.client.user_id().await.as_ref() {
-                        notification.sender = e.sender().to_string();
-                        if room.is_direct() {
-                            notification.group = None;
+                        let sender = e.sender().to_string();
+                        let mut notification = notify_rust::Notification::new();
+                        let group_string = if room.is_direct() {
+                            format!("{}", sender)
                         } else {
-                            notification.group = Some(
-                                room.display_name()
-                                    .await
-                                    .unwrap_or_else(|_| "Unknown room".to_owned()),
-                            );
-                        }
-                        match e {
+                            let g = room
+                                .display_name()
+                                .await
+                                .unwrap_or_else(|_| "Unknown room".to_owned());
+                            format!("{} in {}", sender, g)
+                        };
+                        let content = match e {
                             AnySyncRoomEvent::Message(m) => match m {
                                 AnySyncMessageEvent::RoomMessage(m) => match m.content.msgtype {
-                                    MessageType::Text(t) => {
-                                        notification.content = t.body;
-                                    }
-                                    MessageType::Image(_) => {
-                                        notification.content = String::from("sent an image");
-                                    }
-                                    o => notification.content = format!("{:?}", o),
+                                    MessageType::Text(t) => t.body,
+                                    MessageType::Image(_) => String::from("sent an image"),
+                                    o => format!("{:?}", o),
                                 },
-                                o => notification.content = format!("{:?}", o),
+                                o => format!("{:?}", o),
                             },
-                            _ => {}
+                            _ => String::new(),
+                        };
+                        match self.config.notification_style {
+                            NotificationStyle::Disabled => {}
+                            NotificationStyle::NameOnly => {
+                                notification.summary(&format!("{}", sender));
+                            }
+                            NotificationStyle::NameAndGroup => {
+                                notification.summary(&group_string);
+                            }
+                            NotificationStyle::Full => {
+                                notification.summary(&group_string);
+                                notification.body(&format!("{}", content));
+                            }
                         }
-
-                        // TODO: replace the argument with value from config
-                        notification.notify(tui::NotificationStyle::Full);
+                        if !matches!(self.config.notification_style, NotificationStyle::Disabled) {
+                            if let Err(e) = notification.show() {
+                                tracing::error!("Failed to show notification {}", e);
+                            }
+                        }
                     }
                 }
                 Err(e) => tracing::error!("can't deserialize event from notification: {:?}", e),
@@ -335,7 +348,11 @@ pub fn init() {
     signals_to_block().thread_block().unwrap();
 }
 
-pub async fn run(client: Client, config: crate::config::Config) -> Result<(), matrix_sdk::Error> {
+pub async fn run(
+    client: Client,
+    config: crate::config::Config,
+    key_mapping: crate::config::KeyMapping,
+) -> Result<(), matrix_sdk::Error> {
     let state = Arc::new(Mutex::new(State {
         rooms: BTreeMap::new(),
     }));
@@ -375,6 +392,7 @@ pub async fn run(client: Client, config: crate::config::Config) -> Result<(), ma
         client: client.clone(),
         state: state.clone(),
         events: Arc::new(Mutex::new(event_sender.clone())),
+        config,
     };
 
     client.set_event_handler(Box::new(connection.clone())).await;
@@ -436,7 +454,7 @@ pub async fn run(client: Client, config: crate::config::Config) -> Result<(), ma
         message_query_sender,
         state,
         tui_client,
-        config,
+        key_mapping,
     )
     .await;
 
