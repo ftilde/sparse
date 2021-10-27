@@ -320,11 +320,7 @@ pub async fn run_tui(
                         Mode::Normal => {}
                         Mode::Insert => {
                             if let Some(room) = tui_state.current_room_state_mut() {
-                                input.chain(
-                                    EditBehavior::new(&mut room.msg_edit)
-                                        .delete_forwards_on(Key::Delete)
-                                        .delete_backwards_on(Key::Backspace),
-                                )
+                                input.chain(EditBehavior::new(&mut room.msg_edit))
                             } else {
                                 input
                             };

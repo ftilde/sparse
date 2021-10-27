@@ -107,11 +107,35 @@ fn parse_keys(s: &str) -> rlua::Result<Vec<Key>> {
                 chars = rest;
                 Key::PageDown
             }
-            &['<', 'C' | 'c', '-', c @ '!'..='/' | c @ ':'..='~', '>', ref rest @ ..] => {
+            &['<', 'L', 'e', 'f', 't', '>', ref rest @ ..] => {
+                chars = rest;
+                Key::Left
+            }
+            &['<', 'R', 'i', 'g', 'h', 't', '>', ref rest @ ..] => {
+                chars = rest;
+                Key::Right
+            }
+            &['<', 'U', 'p', '>', ref rest @ ..] => {
+                chars = rest;
+                Key::Up
+            }
+            &['<', 'D', 'o', 'w', 'n', '>', ref rest @ ..] => {
+                chars = rest;
+                Key::Down
+            }
+            &['<', 'B', 'a', 'c', 'k', 's', 'p', 'a', 'c', 'e', '>', ref rest @ ..] => {
+                chars = rest;
+                Key::Backspace
+            }
+            &['<', 'D', 'e', 'l', 'e', 't', 'e', '>', ref rest @ ..] => {
+                chars = rest;
+                Key::Delete
+            }
+            &['<', 'C' | 'c', '-', c @ '!'..='~', '>', ref rest @ ..] => {
                 chars = rest;
                 Key::Ctrl(c)
             }
-            &[c @ '!'..='/' | c @ ':'..='~', ref rest @ ..] => {
+            &[c @ '!'..='~', ref rest @ ..] => {
                 chars = rest;
                 Key::Char(c)
             }

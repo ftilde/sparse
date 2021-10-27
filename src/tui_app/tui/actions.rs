@@ -1,5 +1,6 @@
 use matrix_sdk::Client;
-use unsegen::input::{Editable, Scrollable};
+use unsegen::input::{Editable, OperationResult, Scrollable};
+use unsegen::widget::builtin::PromptLine;
 
 use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
 
@@ -153,7 +154,37 @@ pub const ACTIONS: &[(&'static str, Action)] = &[
             Err("No current room".to_owned())
         }
     }),
+    ("cursor_move_left", |c| {
+        with_msg_edit(c, |e| e.move_cursor_left())
+    }),
+    ("cursor_move_right", |c| {
+        with_msg_edit(c, |e| e.move_cursor_right())
+    }),
+    ("cursor_delete_left", |c| {
+        with_msg_edit(c, |e| e.delete_backwards())
+    }),
+    ("cursor_delete_right", |c| {
+        with_msg_edit(c, |e| e.delete_forwards())
+    }),
+    ("cursor_move_beginning_of_line", |c| {
+        with_msg_edit(c, |e| e.go_to_beginning_of_line())
+    }),
+    ("cursor_move_end_of_line", |c| {
+        with_msg_edit(c, |e| e.go_to_end_of_line())
+    }),
 ];
+
+fn with_msg_edit(
+    c: &mut CommandContext,
+    mut f: impl FnMut(&mut PromptLine) -> OperationResult,
+) -> Result<(), String> {
+    if let Some(room) = c.tui_state.current_room_state_mut() {
+        let _ = f(&mut room.msg_edit);
+        Ok(())
+    } else {
+        Err("No current room".to_owned())
+    }
+}
 
 fn open_file(c: Client, content: impl matrix_sdk::media::MediaEventContent + Send) {
     if let Some(media_type) = content.file() {
