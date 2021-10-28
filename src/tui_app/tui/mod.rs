@@ -5,7 +5,7 @@ use std::io::stdout;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 use unsegen::base::*;
-use unsegen::input::{EditBehavior, Editable, Input, Key};
+use unsegen::input::{EditBehavior, Editable, Input, Key, OperationResult};
 use unsegen::widget::builtin::*;
 use unsegen::widget::*;
 
@@ -62,7 +62,7 @@ impl RoomState {
             selection: MessageSelection::Newest,
         }
     }
-    pub fn send_current_message(&mut self, c: &Client) {
+    pub fn send_current_message(&mut self, c: &Client) -> OperationResult {
         let msg = self.msg_edit.get().to_owned();
         if !msg.is_empty() {
             self.msg_edit.clear().unwrap();
@@ -88,6 +88,9 @@ impl RoomState {
             } else {
                 tracing::error!("can't send message, no joined room");
             }
+            Ok(())
+        } else {
+            Err(())
         }
     }
 }
@@ -128,8 +131,15 @@ fn key_action_behavior<'a>(
                 None
             }
             KeyMapFunctionResult::Found(action) => {
-                if let Err(e) = config.run_action(action, c) {
-                    c.tui_state.last_error_message = Some(format!("{}", e));
+                use crate::tui_app::tui::actions::ActionResult;
+                match config.run_action(action, c) {
+                    Ok(ActionResult::Ok | ActionResult::Noop) => {}
+                    Ok(ActionResult::Error(e)) => {
+                        c.tui_state.last_error_message = Some(e);
+                    }
+                    Err(e) => {
+                        c.tui_state.last_error_message = Some(format!("{}", e));
+                    }
                 }
                 None
             }
@@ -151,13 +161,18 @@ impl TuiState {
         s.set_current_room(current_room);
         s
     }
-    fn enter_mode(&mut self, mode: Mode) {
+    fn enter_mode(&mut self, mode: Mode) -> OperationResult {
         if !matches!(mode, Mode::RoomFilter | Mode::RoomFilterUnread)
             && matches!(self.mode, Mode::RoomFilter | Mode::RoomFilterUnread)
         {
             let _ = self.room_filter_line.clear();
         }
-        self.mode = mode;
+        if self.mode != mode {
+            self.mode = mode;
+            Ok(())
+        } else {
+            Err(())
+        }
     }
     fn set_current_room(&mut self, id: Option<RoomId>) {
         if let Some(id) = &id {

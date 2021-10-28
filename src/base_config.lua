@@ -1,3 +1,36 @@
+run_first_c = function(c, functions)
+    for _, f in ipairs(functions) do
+        local res = f(c);
+        if res:is_ok() or res:is_error() then
+            return res;
+        end
+    end
+    return res_noop();
+end
+
+run_first = function(functions)
+    return function(c)
+        return run_first_c(c, functions);
+    end;
+end
+
+run_all_c = function(c, functions)
+    local res = res_noop();
+    for _, f in ipairs(functions) do
+        res = f(c);
+        if res:is_error() then
+            return res;
+        end
+    end
+    return res;
+end
+
+run_all = function(functions)
+    return function(c)
+        return run_all_c(c, functions);
+    end;
+end
+
 bind('q', 'normal', quit)
 bind('<Return>', 'normal', open_selected_message)
 bind('i', 'normal', enter_insert_mode)
@@ -5,9 +38,9 @@ bind('o', 'normal', enter_room_filter_mode)
 bind('O', 'normal', enter_room_filter_mode_unread)
 bind('k', 'normal', select_prev_message)
 bind('j', 'normal', select_next_message)
-bind('<Esc>', 'normal', deselect_message)
+bind('<Esc>', 'normal', run_first({clear_error_message, deselect_message, cancel_reply}))
 bind('G', 'normal', deselect_message)
-bind('r', 'normal', function(c) c:start_reply(); c:enter_insert_mode() end)
+bind('r', 'normal', run_all({start_reply, enter_insert_mode}))
 bind('n', 'normal', select_next_room)
 bind('p', 'normal', select_prev_room)
 bind('<C-c>', 'normal', clear_message)

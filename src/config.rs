@@ -4,7 +4,7 @@ use std::{collections::HashMap, path::PathBuf};
 use url::Url;
 
 use crate::tui_app::tui::{
-    actions::{CommandContext, ACTIONS},
+    actions::{ActionResult, CommandContext, ACTIONS},
     Mode,
 };
 
@@ -177,12 +177,7 @@ impl rlua::FromLua<'_> for Keys {
 impl UserData for &mut CommandContext<'_> {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
         for (name, f) in ACTIONS {
-            methods.add_method_mut(name, move |_, this, _: ()| {
-                //TODO: report errors. This has to be done in a way that is accessible to lua code
-                //in order to allow for discarding of errors etc.
-                let _ = f(this);
-                Ok(())
-            });
+            methods.add_method_mut(name, move |_, this, _: ()| Ok(f(this)));
         }
     }
 }
@@ -288,12 +283,12 @@ impl KeyMapping {
         &'a self,
         action: KeyAction<'a>,
         c: &mut CommandContext,
-    ) -> rlua::Result<()> {
+    ) -> rlua::Result<ActionResult> {
         self.lua.context(|lua_ctx| {
             lua_ctx.scope(|scope| {
                 let c = scope.create_nonstatic_userdata(c)?;
                 let action: rlua::Function = lua_ctx.registry_value(action.0).unwrap();
-                action.call::<_, ()>(c)
+                action.call::<_, ActionResult>(c)
             })
         })
     }
@@ -345,9 +340,22 @@ impl ConfigBuilder {
         let user = &mut self.user;
         let notification_style = &mut self.notification_style;
         self.lua.context(|lua_ctx| {
-            lua_ctx.scope(|scope| {
-                let globals = lua_ctx.globals();
+            let globals = lua_ctx.globals();
+            globals.set(
+                "res_noop",
+                lua_ctx.create_function_mut(|_lua_ctx, _: ()| Ok(ActionResult::Noop))?,
+            )?;
+            globals.set(
+                "res_ok",
+                lua_ctx.create_function_mut(|_lua_ctx, _: ()| Ok(ActionResult::Ok))?,
+            )?;
+            globals.set(
+                "res_error",
+                lua_ctx
+                    .create_function_mut(|_lua_ctx, msg: String| Ok(ActionResult::Error(msg)))?,
+            )?;
 
+            lua_ctx.scope(|scope| {
                 globals.set(
                     "bind",
                     scope.create_function_mut(
@@ -416,7 +424,7 @@ impl ConfigBuilder {
                 // Define a shortcut binding for all methods of CommandContext
                 for (n, _) in ACTIONS {
                     lua_ctx
-                        .load(&format!("{f} = function(c) c:{f}() end", f = n))
+                        .load(&format!("{f} = function(c) return c:{f}() end", f = n))
                         .eval()?;
                 }
 

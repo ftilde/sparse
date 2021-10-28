@@ -1,4 +1,5 @@
 use matrix_sdk::Client;
+use rlua::{UserData, UserDataMethods};
 use unsegen::input::{Editable, OperationResult, Scrollable};
 use unsegen::widget::builtin::PromptLine;
 
@@ -17,69 +18,94 @@ pub struct CommandContext<'a> {
     pub continue_running: &'a mut bool,
 }
 
-pub type Action = fn(c: &mut CommandContext) -> Result<(), String>;
+#[must_use]
+#[derive(Clone)]
+pub enum ActionResult {
+    Ok,
+    Noop,
+    Error(String),
+}
+
+impl From<OperationResult> for ActionResult {
+    fn from(o: OperationResult) -> Self {
+        match o {
+            Ok(()) => Self::Ok,
+            Err(()) => Self::Noop,
+        }
+    }
+}
+
+impl UserData for ActionResult {
+    fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_method_mut("is_ok", move |_, this, _: ()| {
+            Ok(matches!(this, ActionResult::Ok))
+        });
+        methods.add_method_mut("is_noop", move |_, this, _: ()| {
+            Ok(matches!(this, ActionResult::Noop))
+        });
+        methods.add_method_mut("is_error", move |_, this, _: ()| {
+            Ok(matches!(this, ActionResult::Error(_)))
+        });
+    }
+}
+
+pub type Action = fn(c: &mut CommandContext) -> ActionResult;
 
 pub const ACTIONS: &[(&'static str, Action)] = &[
     ("send_message", |c| {
         if let Some(room) = c.tui_state.current_room_state_mut() {
-            room.send_current_message(&c.client);
-            Ok(())
+            room.send_current_message(&c.client).into()
         } else {
-            Err("No current room".to_owned())
+            ActionResult::Error("No current room".to_owned())
         }
     }),
     ("quit", |c| {
         *c.continue_running = false;
-        Ok(())
+        ActionResult::Ok
     }),
     ("enter_normal_mode", |c| {
-        c.tui_state.enter_mode(Mode::Normal);
-        Ok(())
+        c.tui_state.enter_mode(Mode::Normal).into()
     }),
     ("enter_insert_mode", |c| {
-        c.tui_state.enter_mode(Mode::Insert);
-        Ok(())
+        c.tui_state.enter_mode(Mode::Insert).into()
     }),
     ("enter_room_filter_mode", |c| {
-        c.tui_state.enter_mode(Mode::RoomFilter);
-        Ok(())
+        c.tui_state.enter_mode(Mode::RoomFilter).into()
     }),
     ("enter_room_filter_mode_unread", |c| {
-        c.tui_state.enter_mode(Mode::RoomFilterUnread);
-        Ok(())
+        c.tui_state.enter_mode(Mode::RoomFilterUnread).into()
     }),
     ("select_next_message", |c| {
         super::messages::MessagesMut(c.state, c.tui_state)
             .scroll_forwards()
-            .map_err(|_| "At last message".to_owned())
+            .into()
     }),
     ("select_prev_message", |c| {
         super::messages::MessagesMut(c.state, c.tui_state)
             .scroll_backwards()
-            .map_err(|_| "At first message".to_owned())
+            .into()
     }),
     ("deselect_message", |c| {
         super::messages::MessagesMut(c.state, c.tui_state)
             .scroll_to_end()
-            .map_err(|_| "Nothing selected".to_owned())
+            .into()
     }),
     ("select_next_room", |c| {
         super::rooms::RoomsMut(c.state, c.tui_state)
             .scroll_forwards()
-            .map_err(|_| "At last room".to_owned())
+            .into()
     }),
     ("select_prev_room", |c| {
         super::rooms::RoomsMut(c.state, c.tui_state)
             .scroll_backwards()
-            .map_err(|_| "At first room".to_owned())
+            .into()
     }),
     ("accept_room_selection", |c| {
         let mut r = super::rooms::RoomsMut(&mut c.state, &mut c.tui_state);
         if !r.as_rooms().active_contains_current() {
             let _ = r.scroll_forwards(); // Implicitly select first
         }
-        c.tui_state.enter_mode(Mode::Normal);
-        Ok(())
+        c.tui_state.enter_mode(Mode::Normal).into()
     }),
     ("start_reply", |c| {
         if let Some(id) = &c.tui_state.current_room {
@@ -92,41 +118,53 @@ pub const ACTIONS: &[(&'static str, Action)] = &[
                     {
                         tui_room.msg_edit_type = super::SendMessageType::Reply(msg.clone());
                         tui_room.selection = super::MessageSelection::Newest;
-                        Ok(())
+                        ActionResult::Ok
                     } else {
-                        Err(format!("Cannot find message with id {:?}", eid))
+                        ActionResult::Error(format!("Cannot find message with id {:?}", eid))
                     }
                 } else {
-                    Err("No room selected".to_owned())
+                    ActionResult::Error("No message selected".to_owned())
                 }
             } else {
-                Err("No room state".to_owned())
+                ActionResult::Error("No room state".to_owned())
             }
         } else {
-            Err("No current room".to_owned())
+            ActionResult::Error("No current room".to_owned())
         }
     }),
     ("cancel_reply", |c| {
         if let Some(tui_room) = c.tui_state.current_room_state_mut() {
-            tui_room.msg_edit_type = super::SendMessageType::Simple;
-            Ok(())
+            if !matches!(tui_room.msg_edit_type, super::SendMessageType::Simple) {
+                tui_room.msg_edit_type = super::SendMessageType::Simple;
+                ActionResult::Ok
+            } else {
+                ActionResult::Noop
+            }
         } else {
-            Err("No current room".to_owned())
+            ActionResult::Error("No current room".to_owned())
         }
     }),
     ("clear_message", |c| {
         if let Some(room) = c.tui_state.current_room_state_mut() {
-            room.msg_edit
-                .clear()
-                .map_err(|_| "Already empty".to_owned())
+            room.msg_edit.clear().into()
         } else {
-            Err("No current room".to_owned())
+            ActionResult::Error("No current room".to_owned())
+        }
+    }),
+    ("clear_error_message", |c| {
+        if c.tui_state.last_error_message.is_some() {
+            c.tui_state.last_error_message = None;
+            ActionResult::Ok
+        } else {
+            ActionResult::Noop
         }
     }),
     ("open_selected_message", |c| {
         if let Some(r) = c.tui_state.current_room_state_mut() {
             match &r.selection {
-                super::MessageSelection::Newest => Err("No message selected".to_owned()),
+                super::MessageSelection::Newest => {
+                    ActionResult::Error("No message selected".to_owned())
+                }
                 super::MessageSelection::Specific(eid) => {
                     if let Some(crate::timeline::Event::Message(
                         AnySyncMessageEvent::RoomMessage(msg),
@@ -141,17 +179,17 @@ pub const ACTIONS: &[(&'static str, Action)] = &[
                         match &msg.content.msgtype {
                             MessageType::Image(img) => {
                                 open_file(c.client.clone(), img.clone());
-                                Ok(())
+                                ActionResult::Ok
                             }
-                            o => Err(format!("No open action for message {:?}", o)),
+                            o => ActionResult::Error(format!("No open action for message {:?}", o)),
                         }
                     } else {
-                        Err("No message selected".to_owned())
+                        ActionResult::Error("No message selected".to_owned())
                     }
                 }
             }
         } else {
-            Err("No current room".to_owned())
+            ActionResult::Error("No current room".to_owned())
         }
     }),
     ("cursor_move_left", |c| {
@@ -177,12 +215,12 @@ pub const ACTIONS: &[(&'static str, Action)] = &[
 fn with_msg_edit(
     c: &mut CommandContext,
     mut f: impl FnMut(&mut PromptLine) -> OperationResult,
-) -> Result<(), String> {
+) -> ActionResult {
     if let Some(room) = c.tui_state.current_room_state_mut() {
         let _ = f(&mut room.msg_edit);
-        Ok(())
+        ActionResult::Ok
     } else {
-        Err("No current room".to_owned())
+        ActionResult::Error("No current room".to_owned())
     }
 }
 
