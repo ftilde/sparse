@@ -177,6 +177,18 @@ pub const ACTIONS: &[(&'static str, Action)] = &[
                         .message_from_id(&eid)
                     {
                         match &msg.content.msgtype {
+                            MessageType::Text(t) => {
+                                use linkify::{LinkFinder, LinkKind};
+
+                                let mut finder = LinkFinder::new();
+                                let links = finder.kinds(&[LinkKind::Url]).links(&t.body);
+                                let mut res = ActionResult::Noop;
+                                for link in links {
+                                    open_url(&c.config, link.as_str().to_owned());
+                                    res = ActionResult::Ok;
+                                }
+                                res
+                            }
                             MessageType::Image(img) => {
                                 open_file(c.client.clone(), &c.config, img.clone());
                                 ActionResult::Ok
@@ -226,6 +238,17 @@ fn with_msg_edit(
     } else {
         ActionResult::Error("No current room".to_owned())
     }
+}
+
+fn open_url(config: &Config, url: String) {
+    let open_prog = config.url_open_program.clone();
+    tokio::spawn(async move {
+        let mut join_handle = tokio::process::Command::new(open_prog)
+            .arg(url)
+            .spawn()
+            .unwrap();
+        join_handle.wait().await.unwrap();
+    });
 }
 
 fn open_file(

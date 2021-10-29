@@ -245,6 +245,7 @@ pub struct Config {
     pub user: String,
     pub notification_style: NotificationStyle,
     pub file_open_program: String,
+    pub url_open_program: String,
 }
 
 impl Config {
@@ -303,6 +304,7 @@ pub struct ConfigBuilder {
     user: Option<String>,
     notification_style: NotificationStyle,
     file_open_program: String,
+    url_open_program: String,
 }
 
 impl ConfigBuilder {
@@ -314,6 +316,7 @@ impl ConfigBuilder {
             user: None,
             notification_style: NotificationStyle::default(),
             file_open_program: DEFAULT_OPEN_PROG.to_owned(),
+            url_open_program: DEFAULT_OPEN_PROG.to_owned(),
         }
     }
     pub fn finalize(self) -> Result<(Config, KeyMapping), String> {
@@ -326,6 +329,7 @@ impl ConfigBuilder {
                 user: self.user.ok_or_else(|| "User not configured.".to_owned())?,
                 notification_style: self.notification_style,
                 file_open_program: self.file_open_program,
+                url_open_program: self.url_open_program,
             },
             KeyMapping {
                 keymaps: self.keymaps,
@@ -346,6 +350,7 @@ impl ConfigBuilder {
         let user = &mut self.user;
         let notification_style = &mut self.notification_style;
         let file_open_program = &mut self.file_open_program;
+        let url_open_program = &mut self.url_open_program;
 
         self.lua.context(|lua_ctx| {
             let globals = lua_ctx.globals();
@@ -433,6 +438,14 @@ impl ConfigBuilder {
                     "file_open_program",
                     scope.create_function_mut(|_lua_ctx, fop: String| {
                         *file_open_program = fop;
+                        Ok(())
+                    })?,
+                )?;
+
+                globals.set(
+                    "url_open_program",
+                    scope.create_function_mut(|_lua_ctx, uop: String| {
+                        *url_open_program = uop;
                         Ok(())
                     })?,
                 )?;
