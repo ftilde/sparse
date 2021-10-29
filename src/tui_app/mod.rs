@@ -393,7 +393,7 @@ pub async fn run(
         client: client.clone(),
         state: state.clone(),
         events: Arc::new(Mutex::new(event_sender.clone())),
-        config,
+        config: config.clone(),
     };
 
     client.set_event_handler(Box::new(connection.clone())).await;
@@ -456,6 +456,7 @@ pub async fn run(
         state,
         tui_client,
         key_mapping,
+        config,
     )
     .await;
 

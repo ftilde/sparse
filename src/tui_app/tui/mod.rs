@@ -17,7 +17,7 @@ use matrix_sdk::ruma::{
     identifiers::{EventId, RoomId},
 };
 
-use crate::config::{KeyMapFunctionResult, KeyMapping, Keys};
+use crate::config::{Config, KeyMapFunctionResult, KeyMapping, Keys};
 use crate::timeline::MessageQuery;
 use crate::tui_app::State;
 
@@ -258,6 +258,7 @@ pub async fn run_tui(
     state: Arc<Mutex<State>>,
     client: Client,
     key_mapping: KeyMapping,
+    config: Config,
 ) {
     let stdout = stdout();
     let mut term = Terminal::new(stdout.lock()).unwrap();
@@ -329,6 +330,7 @@ pub async fn run_tui(
                         client: &client,
                         tasks,
                         continue_running: &mut run,
+                        config: &config,
                     };
                     let input = input.chain(key_action_behavior(&mut c, &key_mapping));
                     match &mut tui_state.mode {

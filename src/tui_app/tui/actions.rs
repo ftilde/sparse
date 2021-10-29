@@ -7,13 +7,13 @@ use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
 
 use super::super::State;
 use super::{Mode, Tasks, TuiState};
-
-const OPEN_PROG: &str = "xdg-open";
+use crate::config::Config;
 
 pub struct CommandContext<'a> {
     pub client: &'a Client,
     pub state: &'a mut State,
     pub tui_state: &'a mut TuiState,
+    pub config: &'a Config,
     pub tasks: Tasks<'a>,
     pub continue_running: &'a mut bool,
 }
@@ -178,11 +178,11 @@ pub const ACTIONS: &[(&'static str, Action)] = &[
                     {
                         match &msg.content.msgtype {
                             MessageType::Image(img) => {
-                                open_file(c.client.clone(), img.clone());
+                                open_file(c.client.clone(), &c.config, img.clone());
                                 ActionResult::Ok
                             }
                             MessageType::File(file) => {
-                                open_file(c.client.clone(), file.clone());
+                                open_file(c.client.clone(), &c.config, file.clone());
                                 ActionResult::Ok
                             }
                             o => ActionResult::Error(format!("No open action for message {:?}", o)),
@@ -228,7 +228,12 @@ fn with_msg_edit(
     }
 }
 
-fn open_file(c: Client, content: impl matrix_sdk::media::MediaEventContent + Send) {
+fn open_file(
+    c: Client,
+    config: &Config,
+    content: impl matrix_sdk::media::MediaEventContent + Send,
+) {
+    let open_prog = config.file_open_program.clone();
     if let Some(media_type) = content.file() {
         tokio::spawn(async move {
             match c
@@ -249,7 +254,7 @@ fn open_file(c: Client, content: impl matrix_sdk::media::MediaEventContent + Sen
                         tmpfile.flush().unwrap();
                         tmpfile.into_temp_path()
                     };
-                    let mut join_handle = tokio::process::Command::new(OPEN_PROG)
+                    let mut join_handle = tokio::process::Command::new(open_prog)
                         .arg(&path)
                         .spawn()
                         .unwrap();

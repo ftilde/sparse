@@ -8,6 +8,8 @@ use crate::tui_app::tui::{
     Mode,
 };
 
+const DEFAULT_OPEN_PROG: &str = "xdg-open";
+
 use unsegen::input::Key;
 
 pub struct KeyAction<'a>(&'a RegistryKey);
@@ -242,6 +244,7 @@ pub struct Config {
     pub host: Url,
     pub user: String,
     pub notification_style: NotificationStyle,
+    pub file_open_program: String,
 }
 
 impl Config {
@@ -295,10 +298,11 @@ impl KeyMapping {
 }
 pub struct ConfigBuilder {
     keymaps: HashMap<Mode, KeyMap>,
+    lua: Lua,
     host: Option<Url>,
     user: Option<String>,
     notification_style: NotificationStyle,
-    lua: Lua,
+    file_open_program: String,
 }
 
 impl ConfigBuilder {
@@ -309,6 +313,7 @@ impl ConfigBuilder {
             host: None,
             user: None,
             notification_style: NotificationStyle::default(),
+            file_open_program: DEFAULT_OPEN_PROG.to_owned(),
         }
     }
     pub fn finalize(self) -> Result<(Config, KeyMapping), String> {
@@ -320,6 +325,7 @@ impl ConfigBuilder {
                     .to_owned(),
                 user: self.user.ok_or_else(|| "User not configured.".to_owned())?,
                 notification_style: self.notification_style,
+                file_open_program: self.file_open_program,
             },
             KeyMapping {
                 keymaps: self.keymaps,
@@ -339,6 +345,8 @@ impl ConfigBuilder {
         let host = &mut self.host;
         let user = &mut self.user;
         let notification_style = &mut self.notification_style;
+        let file_open_program = &mut self.file_open_program;
+
         self.lua.context(|lua_ctx| {
             let globals = lua_ctx.globals();
             globals.set(
@@ -417,6 +425,14 @@ impl ConfigBuilder {
                     "notification_style",
                     scope.create_function_mut(|_lua_ctx, style: NotificationStyle| {
                         *notification_style = style;
+                        Ok(())
+                    })?,
+                )?;
+
+                globals.set(
+                    "file_open_program",
+                    scope.create_function_mut(|_lua_ctx, fop: String| {
+                        *file_open_program = fop;
                         Ok(())
                     })?,
                 )?;
