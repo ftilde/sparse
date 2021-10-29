@@ -181,6 +181,10 @@ pub const ACTIONS: &[(&'static str, Action)] = &[
                                 open_file(c.client.clone(), img.clone());
                                 ActionResult::Ok
                             }
+                            MessageType::File(file) => {
+                                open_file(c.client.clone(), file.clone());
+                                ActionResult::Ok
+                            }
                             o => ActionResult::Error(format!("No open action for message {:?}", o)),
                         }
                     } else {

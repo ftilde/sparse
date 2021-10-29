@@ -310,7 +310,7 @@ impl TuiEvent<'_> {
                         }
                         MessageType::File(f) => {
                             c.set_style_modifier(StyleModifier::new().italic(true));
-                            let _ = write!(c, "sent a file ({})", f.body);
+                            let _ = write!(c, " sent a file ({})", f.body);
                         }
                         o => {
                             let _ = write!(c, "Other message {:?}", o);
