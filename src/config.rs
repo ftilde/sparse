@@ -1,5 +1,6 @@
 use rlua::{Lua, RegistryKey, UserData, UserDataMethods, Value};
 use std::error::Error;
+use std::str::FromStr;
 use std::{collections::HashMap, path::PathBuf};
 use url::Url;
 
@@ -190,13 +191,9 @@ impl UserData for &mut CommandContext<'_> {
 impl rlua::FromLua<'_> for Mode {
     fn from_lua(lua_value: rlua::Value<'_>, _lua: rlua::Context<'_>) -> rlua::Result<Self> {
         if let rlua::Value::String(s) = lua_value {
-            match s.to_str()? {
-                "normal" => Ok(Mode::Normal),
-                "insert" => Ok(Mode::Insert),
-                "roomfilter" => Ok(Mode::RoomFilter),
-                "roomfilterunread" => Ok(Mode::RoomFilterUnread),
-                s => Err(rlua::Error::RuntimeError(format!("'{}' is not a mode", s))),
-            }
+            let s = s.to_str()?;
+            Mode::from_str(&s)
+                .map_err(|_| rlua::Error::RuntimeError(format!("'{}' is not a mode", s)))
         } else {
             Err(rlua::Error::RuntimeError(format!(
                 "'{:?}' is not a mode",

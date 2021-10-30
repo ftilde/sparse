@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use matrix_sdk::Client;
 use rlua::{UserData, UserDataMethods};
 use unsegen::input::{Editable, OperationResult, Scrollable, Writable};
@@ -63,18 +65,6 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     ("quit", |c| {
         *c.continue_running = false;
         ActionResult::Ok
-    }),
-    ("enter_normal_mode", |c| {
-        c.tui_state.enter_mode(Mode::Normal).into()
-    }),
-    ("enter_insert_mode", |c| {
-        c.tui_state.enter_mode(Mode::Insert).into()
-    }),
-    ("enter_room_filter_mode", |c| {
-        c.tui_state.enter_mode(Mode::RoomFilter).into()
-    }),
-    ("enter_room_filter_mode_unread", |c| {
-        c.tui_state.enter_mode(Mode::RoomFilterUnread).into()
     }),
     ("select_next_message", |c| {
         super::messages::MessagesMut(c.state, c.tui_state)
@@ -229,8 +219,8 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     }),
 ];
 
-pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] =
-    &[("type", |c, s| match c.tui_state.mode {
+pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
+    ("type", |c, s| match c.tui_state.mode {
         Mode::Normal | Mode::Insert => {
             if let Some(room) = c.tui_state.current_room_state_mut() {
                 for ch in s.chars() {
@@ -247,7 +237,12 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] =
             }
             ActionResult::Ok
         }
-    })];
+    }),
+    ("enter_mode", |c, s| match Mode::from_str(&s) {
+        Err(()) => ActionResult::Error(format!("'{}' is not a mode", s)),
+        Ok(m) => c.tui_state.enter_mode(m).into(),
+    }),
+];
 
 fn with_msg_edit(
     c: &mut CommandContext,

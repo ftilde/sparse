@@ -379,6 +379,20 @@ impl std::default::Default for Mode {
     }
 }
 
+impl std::str::FromStr for Mode {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(match value {
+            "normal" => Mode::Normal,
+            "insert" => Mode::Insert,
+            "roomfilter" => Mode::RoomFilter,
+            "roomfilterunread" => Mode::RoomFilterUnread,
+            _ => return Err(()),
+        })
+    }
+}
+
 impl std::fmt::Display for Mode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
