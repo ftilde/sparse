@@ -1,6 +1,6 @@
 use matrix_sdk::Client;
 use rlua::{UserData, UserDataMethods};
-use unsegen::input::{Editable, OperationResult, Scrollable};
+use unsegen::input::{Editable, OperationResult, Scrollable, Writable};
 use unsegen::widget::builtin::PromptLine;
 
 use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
@@ -49,9 +49,10 @@ impl UserData for ActionResult {
     }
 }
 
-pub type Action = fn(c: &mut CommandContext) -> ActionResult;
+pub type ActionArgsNone = fn(&mut CommandContext) -> ActionResult;
+pub type ActionArgsString = fn(&mut CommandContext, String) -> ActionResult;
 
-pub const ACTIONS: &[(&'static str, Action)] = &[
+pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     ("send_message", |c| {
         if let Some(room) = c.tui_state.current_room_state_mut() {
             room.send_current_message(&c.client).into()
@@ -227,6 +228,26 @@ pub const ACTIONS: &[(&'static str, Action)] = &[
         with_msg_edit(c, |e| e.go_to_end_of_line())
     }),
 ];
+
+pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] =
+    &[("type", |c, s| match c.tui_state.mode {
+        Mode::Normal | Mode::Insert => {
+            if let Some(room) = c.tui_state.current_room_state_mut() {
+                for ch in s.chars() {
+                    room.msg_edit.write(ch).unwrap();
+                }
+                ActionResult::Ok
+            } else {
+                ActionResult::Error("No current room".to_owned())
+            }
+        }
+        Mode::RoomFilter | Mode::RoomFilterUnread => {
+            for ch in s.chars() {
+                c.tui_state.room_filter_line.write(ch).unwrap();
+            }
+            ActionResult::Ok
+        }
+    })];
 
 fn with_msg_edit(
     c: &mut CommandContext,

@@ -4,7 +4,7 @@ use std::{collections::HashMap, path::PathBuf};
 use url::Url;
 
 use crate::tui_app::tui::{
-    actions::{ActionResult, CommandContext, ACTIONS},
+    actions::{ActionResult, CommandContext, ACTIONS_ARGS_NONE, ACTIONS_ARGS_STRING},
     Mode,
 };
 
@@ -178,8 +178,11 @@ impl rlua::FromLua<'_> for Keys {
 
 impl UserData for &mut CommandContext<'_> {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
-        for (name, f) in ACTIONS {
+        for (name, f) in ACTIONS_ARGS_NONE {
             methods.add_method_mut(name, move |_, this, _: ()| Ok(f(this)));
+        }
+        for (name, f) in ACTIONS_ARGS_STRING {
+            methods.add_method_mut(name, move |_, this, s: String| Ok(f(this, s)));
         }
     }
 }
@@ -451,9 +454,18 @@ impl ConfigBuilder {
                 )?;
 
                 // Define a shortcut binding for all methods of CommandContext
-                for (n, _) in ACTIONS {
+                for (n, _) in ACTIONS_ARGS_NONE {
                     lua_ctx
                         .load(&format!("{f} = function(c) return c:{f}() end", f = n))
+                        .eval()?;
+                }
+
+                for (n, _) in ACTIONS_ARGS_STRING {
+                    lua_ctx
+                        .load(&format!(
+                            "{f} = function(s) return function(c) return c:{f}(s) end end",
+                            f = n
+                        ))
                         .eval()?;
                 }
 
