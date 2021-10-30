@@ -242,6 +242,29 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
         Err(()) => ActionResult::Error(format!("'{}' is not a mode", s)),
         Ok(m) => c.tui_state.enter_mode(m).into(),
     }),
+    ("react", |c, s| {
+        if let Some(tui_room) = c.tui_state.current_room_state_mut() {
+            if let super::MessageSelection::Specific(eid) = &tui_room.selection {
+                let reaction = matrix_sdk::ruma::events::reaction::ReactionEventContent::new(
+                    matrix_sdk::ruma::events::reaction::Relation::new(eid.clone(), s),
+                );
+                if let Some(joined_room) = c.client.get_joined_room(&tui_room.id) {
+                    tokio::spawn(async move {
+                        if let Err(e) = joined_room.send(reaction, None).await {
+                            tracing::error!("Cannot react to event: {:?}", e);
+                        }
+                    });
+                    ActionResult::Ok
+                } else {
+                    ActionResult::Error("Room not joined".to_owned())
+                }
+            } else {
+                ActionResult::Error("No message selected".to_owned())
+            }
+        } else {
+            ActionResult::Error("No current room".to_owned())
+        }
+    }),
 ];
 
 fn with_msg_edit(
