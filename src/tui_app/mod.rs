@@ -3,6 +3,7 @@ use matrix_sdk::{
     room::Room,
     ruma::api::client::r0::push::get_notifications::Notification,
     ruma::events::{
+        reaction::ReactionEventContent,
         room::message::{MessageEventContent, MessageType},
         room::{
             aliases::AliasesEventContent, canonical_alias::CanonicalAliasEventContent,
@@ -188,7 +189,12 @@ impl Connection {
 impl EventHandler for Connection {
     // Handled in batches
     async fn on_room_message(&self, room: Room, _event: &SyncMessageEvent<MessageEventContent>) {
-        //self.add_room_message(&room, event).await;
+        let mut state = self.state.lock().await;
+        let m = &mut state.rooms.get_mut(&room.room_id()).unwrap().messages;
+        m.notify_new_messages();
+        self.update().await;
+    }
+    async fn on_room_reaction(&self, room: Room, _: &SyncMessageEvent<ReactionEventContent>) {
         let mut state = self.state.lock().await;
         let m = &mut state.rooms.get_mut(&room.room_id()).unwrap().messages;
         m.notify_new_messages();
