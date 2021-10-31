@@ -106,6 +106,10 @@ fn parse_keys(s: &str) -> rlua::Result<Vec<Key>> {
                 chars = rest;
                 Key::Char('\n')
             }
+            &['<', 'S', 'p', 'a', 'c', 'e', '>', ref rest @ ..] => {
+                chars = rest;
+                Key::Char(' ')
+            }
             &['<', 'T', 'a', 'b', '>', ref rest @ ..] => {
                 chars = rest;
                 Key::Char('\t')
@@ -180,7 +184,33 @@ pub struct Keys(pub Vec<Key>);
 
 impl std::fmt::Display for Keys {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.0) //TODO: proper formatting
+        for k in &self.0 {
+            match k {
+                Key::Backspace => write!(f, "<Backspace>"),
+                Key::Left => write!(f, "<Left>"),
+                Key::Right => write!(f, "<Right>"),
+                Key::Up => write!(f, "<Up>"),
+                Key::Down => write!(f, "<Down>"),
+                Key::Home => write!(f, "<Home>"),
+                Key::End => write!(f, "<End>"),
+                Key::PageUp => write!(f, "<PageUp>"),
+                Key::PageDown => write!(f, "<PageDown>"),
+                Key::BackTab => write!(f, "<BackTab>"),
+                Key::Delete => write!(f, "<Delete>"),
+                Key::Insert => write!(f, "<Insert>"),
+                Key::F(n) => write!(f, "<F{}>", n),
+                Key::Char(' ') => write!(f, "<Space>"),
+                Key::Char('\n') => write!(f, "<Return>"),
+                Key::Char('\t') => write!(f, "<Tab>"),
+                Key::Char(c) => write!(f, "{}", c),
+                Key::Alt(c) => write!(f, "<A-{}>", c),
+                Key::Ctrl(c) => write!(f, "<C-{}>", c),
+                Key::Null => write!(f, "<Null>"),
+                Key::Esc => write!(f, "<Esc>"),
+                _ => write!(f, "<UnknownKey>"),
+            }?
+        }
+        Ok(())
     }
 }
 

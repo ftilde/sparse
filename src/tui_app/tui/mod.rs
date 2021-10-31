@@ -214,6 +214,24 @@ fn msg_edit<'a>(room_state: &'a RoomState, potentially_active: bool) -> impl Wid
     )
 }
 
+fn status_bar<'a>(tui_state: &'a TuiState) -> impl Widget + 'a {
+    let spacer = " ".with_demand(|_| Demand2D {
+        width: ColDemand::at_least(0),
+        height: RowDemand::exact(1),
+    });
+    let mut hlayout = HLayout::new().separator(GraphemeCluster::try_from(' ').unwrap());
+
+    if let Some(msg) = &tui_state.last_error_message {
+        hlayout = hlayout.widget(msg)
+    }
+
+    hlayout = hlayout
+        .widget(spacer)
+        .widget(tui_state.mode.to_string())
+        .widget(format!("{}", tui_state.previous_keys));
+    hlayout
+}
+
 fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl Widget + 'a {
     let mut hlayout = HLayout::new()
         .separator(GraphemeCluster::try_from('│').unwrap())
@@ -226,11 +244,7 @@ fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl 
             0.75,
         )
     }
-    let mut vlayout = VLayout::new().widget(hlayout);
-    if let Some(msg) = &tui_state.last_error_message {
-        vlayout = vlayout.widget(msg)
-    }
-    vlayout
+    VLayout::new().widget(hlayout).widget(status_bar(tui_state))
 }
 
 #[derive(Debug)]
