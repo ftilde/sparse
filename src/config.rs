@@ -1,7 +1,9 @@
 use rlua::{Lua, RegistryKey, UserData, UserDataMethods, Value};
+use sequence_trie::SequenceTrie;
+use std::collections::HashMap;
 use std::error::Error;
+use std::path::PathBuf;
 use std::str::FromStr;
-use std::{collections::HashMap, path::PathBuf};
 use url::Url;
 
 use crate::tui_app::tui::{
@@ -15,11 +17,11 @@ use unsegen::input::Key;
 
 pub struct KeyAction<'a>(&'a RegistryKey);
 
-struct KeyMap(HashMap<Keys, RegistryKey>);
+struct KeyMap(SequenceTrie<Key, RegistryKey>);
 
 impl std::default::Default for KeyMap {
     fn default() -> Self {
-        KeyMap(HashMap::new())
+        KeyMap(SequenceTrie::new())
     }
 }
 
@@ -30,7 +32,8 @@ impl std::borrow::Borrow<[Key]> for Keys {
 }
 
 pub enum KeyMapFunctionResult<'a> {
-    IsPrefix(usize),
+    IsPrefix(Keys),
+    FoundPrefix(Keys),
     Found(KeyAction<'a>),
     NotFound,
 }
@@ -43,10 +46,13 @@ impl KeyMap {
         f: rlua::Function<'lua>,
     ) -> rlua::Result<()> {
         match self.find(&keys) {
-            KeyMapFunctionResult::IsPrefix(i) => Err(rlua::Error::RuntimeError(format!(
-                "Key binding '{}' conflicts with existing binding(s) with prefix {}",
-                keys,
-                Keys(keys.0[..i].to_vec())
+            KeyMapFunctionResult::IsPrefix(conflict) => Err(rlua::Error::RuntimeError(format!(
+                "Key binding '{}' is a prefix of the existing binding '{}'",
+                keys, conflict,
+            ))),
+            KeyMapFunctionResult::FoundPrefix(conflict) => Err(rlua::Error::RuntimeError(format!(
+                "Existing key binding '{}' is a prefix of the desired binding '{}'",
+                conflict, keys
             ))),
             KeyMapFunctionResult::Found(_) => Err(rlua::Error::RuntimeError(format!(
                 "Key binding '{}' already exists",
@@ -55,7 +61,7 @@ impl KeyMap {
             KeyMapFunctionResult::NotFound => {
                 //TODO: check function signature somehow?
                 let k = lua.create_registry_value(f)?;
-                let prev = self.0.insert(keys, k);
+                let prev = self.0.insert_owned(keys.0, k);
                 assert!(prev.is_none());
                 Ok(())
             }
@@ -63,16 +69,30 @@ impl KeyMap {
     }
 
     pub fn find<'a>(&'a self, keys: &Keys) -> KeyMapFunctionResult<'a> {
-        for i in 0..keys.0.len() {
-            let prefix = &keys.0[0..i];
-            if self.0.contains_key(prefix) {
-                return KeyMapFunctionResult::IsPrefix(i);
+        if let Some(f) = self.0.get(keys.0.iter()) {
+            return KeyMapFunctionResult::Found(KeyAction(f));
+        }
+        let prefix_nodes = self.0.get_prefix_nodes(keys.0.iter());
+        if let Some(longest_prefix) = prefix_nodes.last() {
+            let num_prefix_keys = prefix_nodes.len() - 1; //root node is empty => -1;
+            let mut it = longest_prefix.keys();
+            if longest_prefix.value().is_some() {
+                assert!(longest_prefix.is_leaf(), "There is a prefix in the trie");
+                let prefix = keys.0[0..num_prefix_keys].iter().cloned().collect();
+                return KeyMapFunctionResult::FoundPrefix(Keys(prefix));
+            }
+            if keys.0.len() == num_prefix_keys {
+                let k = it.next().unwrap();
+                let conflict_keys = keys
+                    .0
+                    .iter()
+                    .cloned()
+                    .chain(k.into_iter().cloned())
+                    .collect();
+                return KeyMapFunctionResult::IsPrefix(Keys(conflict_keys));
             }
         }
-        match self.0.get(keys) {
-            Some(f) => KeyMapFunctionResult::Found(KeyAction(f)),
-            None => KeyMapFunctionResult::NotFound,
-        }
+        KeyMapFunctionResult::NotFound
     }
 }
 
@@ -386,13 +406,14 @@ impl ConfigBuilder {
                     scope.create_function_mut(|_lua_ctx, (key, mode): (Keys, Mode)| {
                         let mut keymaps = keymaps.borrow_mut();
                         let keymap = keymaps.entry(mode).or_default();
-                        if keymap.0.remove(&key).is_none() {
+                        if let KeyMapFunctionResult::Found(_) = keymap.find(&key) {
+                            keymap.0.remove(&key.0);
+                            Ok(())
+                        } else {
                             Err(rlua::Error::RuntimeError(format!(
                                 "No binding of {} in mode {} exists",
                                 key, mode
                             )))
-                        } else {
-                            Ok(())
                         }
                     })?,
                 )?;
@@ -402,7 +423,7 @@ impl ConfigBuilder {
                     scope.create_function_mut(|_lua_ctx, _: ()| {
                         let mut keymaps = keymaps.borrow_mut();
                         for (_, m) in keymaps.iter_mut() {
-                            m.0.clear();
+                            *m = KeyMap::default();
                         }
                         Ok(())
                     })?,

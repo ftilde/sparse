@@ -35,6 +35,7 @@ notify-rust = "4.5"
 tempfile = "3.2"
 rlua = "0.17"
 linkify = "0.7"
+sequence_trie = "0.3.4"
 
 [dependencies.matrix-sdk]
 #git = "https://github.com/matrix-org/matrix-rust-sdk"

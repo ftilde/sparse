@@ -143,7 +143,7 @@ fn key_action_behavior<'a>(
                 }
                 None
             }
-            KeyMapFunctionResult::NotFound => Some(input),
+            KeyMapFunctionResult::NotFound | KeyMapFunctionResult::FoundPrefix(_) => Some(input),
         }
     }
 }
