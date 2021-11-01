@@ -265,6 +265,34 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
             ActionResult::Error("No current room".to_owned())
         }
     }),
+    ("send_file", |c, path| {
+        if let Some(room) = c.tui_state.current_room_state_mut() {
+            if let Some(joined_room) = c.client.get_joined_room(&room.id) {
+                let path = std::path::PathBuf::from(path);
+                match std::fs::File::open(&path) {
+                    Ok(mut file) => {
+                        let mime_type = mime_guess::from_path(&path).first_or_octet_stream();
+                        let description: String =
+                            path.file_name().unwrap().to_string_lossy().to_string();
+                        tokio::spawn(async move {
+                            if let Err(e) = joined_room
+                                .send_attachment(&description, &mime_type, &mut file, None)
+                                .await
+                            {
+                                tracing::error!("Cannot send file: {:?}", e);
+                            }
+                        });
+                        ActionResult::Ok
+                    }
+                    Err(e) => ActionResult::Error(format!("Cannot open file for sending: {:?}", e)),
+                }
+            } else {
+                ActionResult::Error("Room not joined".to_owned())
+            }
+        } else {
+            ActionResult::Error("No current room".to_owned())
+        }
+    }),
 ];
 
 fn with_msg_edit(
