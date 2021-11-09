@@ -46,12 +46,21 @@ async fn try_restore_session(
     Ok(())
 }
 
-async fn login(config: &Config) -> Result<Client, Box<dyn std::error::Error>> {
+async fn login(config: &Config) -> Result<Client, String> {
     // the location for `JsonStore` to save files to
     let data_dir = config.data_dir()?;
     let client_config = ClientConfig::new().store_path(data_dir);
     // create a new Client with the given homeserver url and config
-    let client = Client::new_with_config(config.host.clone(), client_config).unwrap();
+    let client = match Client::new_with_config(config.host.clone(), client_config) {
+        Ok(client) => client,
+        Err(matrix_sdk::Error::StateStore(matrix_sdk::StoreError::Sled(s))) => {
+            return Err(format!(
+                "Failed to open database. Is another sparse session running?\n\n{}",
+                s
+            ));
+        }
+        Err(e) => return Err(format!("{:?}", e)),
+    };
 
     if try_restore_session(&client, &config).await.is_err() {
         eprintln!(

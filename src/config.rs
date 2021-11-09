@@ -1,7 +1,6 @@
 use rlua::{Lua, RegistryKey, UserData, UserDataMethods, Value};
 use sequence_trie::SequenceTrie;
 use std::collections::HashMap;
-use std::error::Error;
 use std::path::PathBuf;
 use std::str::FromStr;
 use url::Url;
@@ -299,7 +298,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn user_id(&self) -> Result<String, Box<dyn Error>> {
+    pub fn user_id(&self) -> Result<String, String> {
         Ok(format!(
             "@{}:{}",
             self.user,
@@ -309,14 +308,14 @@ impl Config {
         ))
     }
 
-    pub fn data_dir(&self) -> Result<PathBuf, Box<dyn Error>> {
+    pub fn data_dir(&self) -> Result<PathBuf, String> {
         Ok(dirs::data_local_dir()
             .unwrap()
             .join(crate::APP_NAME)
             .join(self.user_id()?))
     }
 
-    pub fn session_file_path(&self) -> Result<PathBuf, Box<dyn Error>> {
+    pub fn session_file_path(&self) -> Result<PathBuf, String> {
         Ok(self.data_dir()?.join("session"))
     }
 }
