@@ -341,7 +341,8 @@ impl KeyMapping {
             lua_ctx.scope(|scope| {
                 let c = scope.create_nonstatic_userdata(c)?;
                 let action: rlua::Function = lua_ctx.registry_value(action.0).unwrap();
-                action.call::<_, ActionResult>(c)
+                let res = action.call::<_, ActionResult>(c);
+                res
             })
         })
     }

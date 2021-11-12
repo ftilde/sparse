@@ -1,5 +1,10 @@
-run_first_c = function(c, functions)
-    for _, f in ipairs(functions) do
+run_first_c = function(c, vals)
+    for i=1,vals.n do
+        local f = vals[i]
+        if f == nil then
+            error("Argument " .. i .. " of 'run_first' is not defined")
+        end
+
         local res = f(c);
         if res:is_ok() or res:is_error() then
             return res;
@@ -8,15 +13,22 @@ run_first_c = function(c, functions)
     return res_noop();
 end
 
-run_first = function(functions)
+run_first = function(...)
+    local vals = table.pack(...)
     return function(c)
-        return run_first_c(c, functions);
+        return run_first_c(c, vals)
     end;
 end
 
-run_all_c = function(c, functions)
+run_all_c = function(c, vals)
     local res = res_noop();
-    for _, f in ipairs(functions) do
+
+    for i=1,vals.n do
+        local f = vals[i]
+        if f == nil then
+            error("Argument " .. i .. " of 'run_all' is not defined")
+        end
+
         res = f(c);
         if res:is_error() then
             return res;
@@ -25,9 +37,11 @@ run_all_c = function(c, functions)
     return res;
 end
 
-run_all = function(functions)
+run_all = function(...)
+    local vals = table.pack(...)
+
     return function(c)
-        return run_all_c(c, functions);
+        return run_all_c(c, vals)
     end;
 end
 
@@ -38,9 +52,9 @@ bind('o', 'normal', enter_mode("roomfilter"))
 bind('O', 'normal', enter_mode("roomfilterunread"))
 bind('k', 'normal', select_prev_message)
 bind('j', 'normal', select_next_message)
-bind('<Esc>', 'normal', run_first({clear_error_message, deselect_message, cancel_reply}))
+bind('<Esc>', 'normal', run_first(clear_error_message, deselect_message, cancel_reply))
 bind('G', 'normal', deselect_message)
-bind('r', 'normal', run_all({start_reply, enter_insert_mode}))
+bind('r', 'normal', run_all(start_reply, enter_mode("insert")))
 bind('n', 'normal', select_next_room)
 bind('p', 'normal', select_prev_room)
 bind('<C-c>', 'normal', clear_message)
