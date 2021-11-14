@@ -1329,7 +1329,7 @@ checksum = "a3e378b66a060d48947b590737b30a1be76706c8dd7b8ba0f2fe3989c68a853f"
 [[package]]
 name = "matrix-qrcode"
 version = "0.1.0"
-source = "git+https://github.com/ftilde/matrix-rust-sdk?branch=messages-api#3360231561788d2996006ad79fb8680c576b5602"
+source = "git+https://github.com/ftilde/matrix-rust-sdk?branch=sparse#dfecae031ed7db5356bf10430677ff32b6cd1b58"
 dependencies = [
  "base64",
  "byteorder",
@@ -1343,7 +1343,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk"
 version = "0.3.0"
-source = "git+https://github.com/ftilde/matrix-rust-sdk?branch=messages-api#3360231561788d2996006ad79fb8680c576b5602"
+source = "git+https://github.com/ftilde/matrix-rust-sdk?branch=sparse#dfecae031ed7db5356bf10430677ff32b6cd1b58"
 dependencies = [
  "backoff",
  "bytes",
@@ -1368,7 +1368,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-base"
 version = "0.3.0"
-source = "git+https://github.com/ftilde/matrix-rust-sdk?branch=messages-api#3360231561788d2996006ad79fb8680c576b5602"
+source = "git+https://github.com/ftilde/matrix-rust-sdk?branch=sparse#dfecae031ed7db5356bf10430677ff32b6cd1b58"
 dependencies = [
  "chacha20poly1305",
  "dashmap",
@@ -1393,7 +1393,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-common"
 version = "0.3.0"
-source = "git+https://github.com/ftilde/matrix-rust-sdk?branch=messages-api#3360231561788d2996006ad79fb8680c576b5602"
+source = "git+https://github.com/ftilde/matrix-rust-sdk?branch=sparse#dfecae031ed7db5356bf10430677ff32b6cd1b58"
 dependencies = [
  "async-trait",
  "futures",
@@ -1409,7 +1409,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-crypto"
 version = "0.3.0"
-source = "git+https://github.com/ftilde/matrix-rust-sdk?branch=messages-api#3360231561788d2996006ad79fb8680c576b5602"
+source = "git+https://github.com/ftilde/matrix-rust-sdk?branch=sparse#dfecae031ed7db5356bf10430677ff32b6cd1b58"
 dependencies = [
  "aes",
  "aes-gcm",
