@@ -308,6 +308,14 @@ impl TuiEvent<'_> {
                             c.set_style_modifier(StyleModifier::new().italic(true));
                             let _ = write!(c, " sent an image ({})", img.body);
                         }
+                        MessageType::Video(v) => {
+                            c.set_style_modifier(StyleModifier::new().italic(true));
+                            let _ = write!(c, " sent a video ({})", v.body);
+                        }
+                        MessageType::Audio(a) => {
+                            c.set_style_modifier(StyleModifier::new().italic(true));
+                            let _ = write!(c, " sent an audio message ({})", a.body);
+                        }
                         MessageType::File(f) => {
                             c.set_style_modifier(StyleModifier::new().italic(true));
                             let _ = write!(c, " sent a file ({})", f.body);

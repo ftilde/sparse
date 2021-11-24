@@ -229,12 +229,20 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                                 }
                                 res
                             }
-                            MessageType::Image(img) => {
-                                open_file(c.client.clone(), &c.config, img.clone());
+                            MessageType::Image(f) => {
+                                open_file(c.client.clone(), &c.config, f.clone());
                                 ActionResult::Ok
                             }
-                            MessageType::File(file) => {
-                                open_file(c.client.clone(), &c.config, file.clone());
+                            MessageType::Video(f) => {
+                                open_file(c.client.clone(), &c.config, f.clone());
+                                ActionResult::Ok
+                            }
+                            MessageType::Audio(f) => {
+                                open_file(c.client.clone(), &c.config, f.clone());
+                                ActionResult::Ok
+                            }
+                            MessageType::File(f) => {
+                                open_file(c.client.clone(), &c.config, f.clone());
                                 ActionResult::Ok
                             }
                             o => ActionResult::Error(format!("No open action for message {:?}", o)),

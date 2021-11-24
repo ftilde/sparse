@@ -246,6 +246,8 @@ impl EventHandler for Connection {
                                 AnySyncMessageEvent::RoomMessage(m) => match m.content.msgtype {
                                     MessageType::Text(t) => t.body,
                                     MessageType::Image(_) => String::from("sent an image"),
+                                    MessageType::Audio(_) => String::from("sent an audio message"),
+                                    MessageType::Video(_) => String::from("sent a video"),
                                     MessageType::File(_) => String::from("sent a file"),
                                     o => format!("{:?}", o),
                                 },
