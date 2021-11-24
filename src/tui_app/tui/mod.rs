@@ -5,7 +5,7 @@ use std::io::stdout;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 use unsegen::base::*;
-use unsegen::input::{EditBehavior, Editable, Input, Key, OperationResult};
+use unsegen::input::{EditBehavior, Editable, Input, Key, OperationResult, ScrollBehavior};
 use unsegen::widget::builtin::*;
 use unsegen::widget::*;
 
@@ -363,11 +363,17 @@ pub async fn run_tui(
                             }
                         }
                         Mode::Command => {
-                            input.chain(
-                                EditBehavior::new(&mut tui_state.command_line)
-                                    .delete_forwards_on(Key::Delete)
-                                    .delete_backwards_on(Key::Backspace),
-                            );
+                            input
+                                .chain(
+                                    EditBehavior::new(&mut tui_state.command_line)
+                                        .delete_forwards_on(Key::Delete)
+                                        .delete_backwards_on(Key::Backspace),
+                                )
+                                .chain(
+                                    ScrollBehavior::new(&mut tui_state.command_line)
+                                        .backwards_on(Key::Up)
+                                        .forwards_on(Key::Down),
+                                );
                         }
                         Mode::RoomFilter | Mode::RoomFilterUnread => {
                             input.chain(
