@@ -358,7 +358,7 @@ pub fn init() {
 pub async fn run(
     client: Client,
     config: crate::config::Config,
-    key_mapping: crate::config::KeyMapping,
+    command_environment: tui::actions::CommandEnvironment,
 ) -> Result<(), matrix_sdk::Error> {
     let state = Arc::new(Mutex::new(State {
         rooms: BTreeMap::new(),
@@ -461,7 +461,7 @@ pub async fn run(
         message_query_sender,
         state,
         tui_client,
-        key_mapping,
+        command_environment,
         config,
     )
     .await;

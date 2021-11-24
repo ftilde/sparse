@@ -17,8 +17,9 @@ use matrix_sdk::ruma::{
     identifiers::{EventId, RoomId},
 };
 
-use crate::config::{Config, KeyMapFunctionResult, KeyMapping, Keys};
+use crate::config::{Config, KeyMapFunctionResult, Keys};
 use crate::timeline::MessageQuery;
+use crate::tui_app::tui::actions::CommandEnvironment;
 use crate::tui_app::State;
 
 use nix::sys::signal;
@@ -109,13 +110,13 @@ pub struct TuiState {
     rooms: BTreeMap<RoomId, RoomState>,
     mode: Mode,
     room_filter_line: LineEdit,
+    command_line: PromptLine,
     previous_keys: Keys,
     last_error_message: Option<String>,
 }
 
 fn key_action_behavior<'a>(
     c: &'a mut actions::CommandContext<'a>,
-    config: &'a KeyMapping,
 ) -> impl unsegen::input::Behavior + 'a {
     move |input: Input| -> Option<Input> {
         let mut new_keys = Keys(Vec::new());
@@ -125,14 +126,14 @@ fn key_action_behavior<'a>(
             return Some(input);
         }
         std::mem::swap(&mut new_keys, &mut c.tui_state.previous_keys);
-        match config.find_action(&c.tui_state.mode, &new_keys) {
+        match c.config.keymaps.find_action(&c.tui_state.mode, &new_keys) {
             KeyMapFunctionResult::IsPrefix(_) => {
                 c.tui_state.previous_keys = new_keys;
                 None
             }
             KeyMapFunctionResult::Found(action) => {
                 use crate::tui_app::tui::actions::ActionResult;
-                match config.run_action(action, c) {
+                match c.command_environment.run_action(action, c) {
                     Ok(ActionResult::Ok | ActionResult::Noop) => {}
                     Ok(ActionResult::Error(e)) => {
                         c.tui_state.last_error_message = Some(e);
@@ -155,6 +156,7 @@ impl TuiState {
             current_room: None,
             mode: Mode::default(),
             room_filter_line: LineEdit::new(),
+            command_line: PromptLine::with_prompt(":".to_owned()),
             previous_keys: Keys(Vec::new()),
             last_error_message: None,
         };
@@ -166,6 +168,9 @@ impl TuiState {
             && matches!(self.mode, Mode::RoomFilter | Mode::RoomFilterUnread)
         {
             let _ = self.room_filter_line.clear();
+        }
+        if !matches!(mode, Mode::Command) && matches!(self.mode, Mode::Command) {
+            let _ = self.command_line.clear();
         }
         if self.mode != mode {
             self.mode = mode;
@@ -214,7 +219,7 @@ fn msg_edit<'a>(room_state: &'a RoomState, potentially_active: bool) -> impl Wid
     )
 }
 
-fn status_bar<'a>(tui_state: &'a TuiState) -> impl Widget + 'a {
+fn bottom_bar<'a>(tui_state: &'a TuiState) -> impl Widget + 'a {
     let spacer = " ".with_demand(|_| Demand2D {
         width: ColDemand::at_least(0),
         height: RowDemand::exact(1),
@@ -223,6 +228,8 @@ fn status_bar<'a>(tui_state: &'a TuiState) -> impl Widget + 'a {
 
     if let Some(msg) = &tui_state.last_error_message {
         hlayout = hlayout.widget(msg)
+    } else if matches!(tui_state.mode, Mode::Command) {
+        hlayout = hlayout.widget(tui_state.command_line.as_widget())
     }
 
     hlayout = hlayout
@@ -244,7 +251,7 @@ fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl 
             0.75,
         )
     }
-    VLayout::new().widget(hlayout).widget(status_bar(tui_state))
+    VLayout::new().widget(hlayout).widget(bottom_bar(tui_state))
 }
 
 #[derive(Debug)]
@@ -271,7 +278,7 @@ pub async fn run_tui(
     message_query_sink: watch::Sender<Option<MessageQueryRequest>>,
     state: Arc<Mutex<State>>,
     client: Client,
-    key_mapping: KeyMapping,
+    command_environment: CommandEnvironment,
     config: Config,
 ) {
     let stdout = stdout();
@@ -345,16 +352,22 @@ pub async fn run_tui(
                         tasks,
                         continue_running: &mut run,
                         config: &config,
+                        command_environment: &command_environment,
                     };
-                    let input = input.chain(key_action_behavior(&mut c, &key_mapping));
+                    let input = input.chain(key_action_behavior(&mut c));
                     match &mut tui_state.mode {
                         Mode::Normal => {}
                         Mode::Insert => {
                             if let Some(room) = tui_state.current_room_state_mut() {
-                                input.chain(EditBehavior::new(&mut room.msg_edit))
-                            } else {
-                                input
-                            };
+                                input.chain(EditBehavior::new(&mut room.msg_edit));
+                            }
+                        }
+                        Mode::Command => {
+                            input.chain(
+                                EditBehavior::new(&mut tui_state.command_line)
+                                    .delete_forwards_on(Key::Delete)
+                                    .delete_backwards_on(Key::Backspace),
+                            );
                         }
                         Mode::RoomFilter | Mode::RoomFilterUnread => {
                             input.chain(
@@ -382,6 +395,7 @@ pub async fn run_tui(
 pub enum Mode {
     Normal,
     Insert,
+    Command,
     //Visual,
     RoomFilter,
     RoomFilterUnread,
@@ -400,6 +414,7 @@ impl std::str::FromStr for Mode {
         Ok(match value {
             "normal" => Mode::Normal,
             "insert" => Mode::Insert,
+            "command" => Mode::Command,
             "roomfilter" => Mode::RoomFilter,
             "roomfilterunread" => Mode::RoomFilterUnread,
             _ => return Err(()),
@@ -412,6 +427,7 @@ impl std::fmt::Display for Mode {
         let s = match self {
             Mode::Normal => "normal",
             Mode::Insert => "insert",
+            Mode::Command => "command",
             Mode::RoomFilter => "roomfilter",
             Mode::RoomFilterUnread => "roomfilterunread",
         };

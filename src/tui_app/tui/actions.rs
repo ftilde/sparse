@@ -1,7 +1,7 @@
+use rlua::{Lua, RegistryKey, UserData, UserDataMethods};
 use std::str::FromStr;
 
 use matrix_sdk::Client;
-use rlua::{UserData, UserDataMethods};
 use unsegen::input::{Editable, OperationResult, Scrollable, Writable};
 use unsegen::widget::builtin::PromptLine;
 
@@ -11,6 +11,8 @@ use super::super::State;
 use super::{Mode, Tasks, TuiState};
 use crate::config::Config;
 
+pub struct KeyAction<'a>(pub &'a RegistryKey);
+
 pub struct CommandContext<'a> {
     pub client: &'a Client,
     pub state: &'a mut State,
@@ -18,6 +20,53 @@ pub struct CommandContext<'a> {
     pub config: &'a Config,
     pub tasks: Tasks<'a>,
     pub continue_running: &'a mut bool,
+    pub command_environment: &'a CommandEnvironment,
+}
+
+impl<'a> CommandContext<'a> {
+    pub fn run_command(&mut self, cmd: &str) -> rlua::Result<ActionResult> {
+        self.command_environment.lua.context(|lua_ctx| {
+            lua_ctx.scope(|scope| {
+                let c = scope.create_nonstatic_userdata(self)?;
+                let f: rlua::Function = match lua_ctx.load(cmd).eval() {
+                    Ok(f) => f,
+                    Err(rlua::Error::FromLuaConversionError { from: "nil", .. }) => {
+                        return Ok(ActionResult::Error(format!(
+                            "Expression '{}' is not a valid command.",
+                            cmd
+                        )))
+                    }
+                    Err(e) => return Err(e),
+                };
+                lua_ctx.load(cmd).eval()?;
+                f.call::<_, ActionResult>(c)
+            })
+        })
+    }
+}
+
+pub struct CommandEnvironment {
+    lua: Lua,
+}
+
+impl CommandEnvironment {
+    pub fn new(lua: Lua) -> Self {
+        CommandEnvironment { lua }
+    }
+    pub fn run_action<'a>(
+        &'a self,
+        action: KeyAction<'a>,
+        c: &mut CommandContext,
+    ) -> rlua::Result<ActionResult> {
+        self.lua.context(|lua_ctx| {
+            lua_ctx.scope(|scope| {
+                let c = scope.create_nonstatic_userdata(c)?;
+                let action: rlua::Function = lua_ctx.registry_value(action.0).unwrap();
+                let res = action.call::<_, ActionResult>(c);
+                res
+            })
+        })
+    }
 }
 
 #[must_use]
@@ -217,6 +266,17 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     ("cursor_move_end_of_line", |c| {
         with_msg_edit(c, |e| e.go_to_end_of_line())
     }),
+    ("run_command", |c| {
+        if !c.tui_state.command_line.get().is_empty() {
+            let cmd = c.tui_state.command_line.finish_line().to_owned();
+            match c.run_command(&cmd) {
+                Ok(r) => r,
+                Err(e) => ActionResult::Error(format!("{}", e)),
+            }
+        } else {
+            ActionResult::Noop
+        }
+    }),
 ];
 
 pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
@@ -230,6 +290,12 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
             } else {
                 ActionResult::Error("No current room".to_owned())
             }
+        }
+        Mode::Command => {
+            for ch in s.chars() {
+                c.tui_state.command_line.write(ch).unwrap();
+            }
+            ActionResult::Ok
         }
         Mode::RoomFilter | Mode::RoomFilterUnread => {
             for ch in s.chars() {

@@ -3,10 +3,14 @@ use sequence_trie::SequenceTrie;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use url::Url;
 
 use crate::tui_app::tui::{
-    actions::{ActionResult, CommandContext, ACTIONS_ARGS_NONE, ACTIONS_ARGS_STRING},
+    actions::{
+        ActionResult, CommandContext, CommandEnvironment, KeyAction, ACTIONS_ARGS_NONE,
+        ACTIONS_ARGS_STRING,
+    },
     Mode,
 };
 
@@ -14,7 +18,12 @@ const DEFAULT_OPEN_PROG: &str = "xdg-open";
 
 use unsegen::input::Key;
 
-pub struct KeyAction<'a>(&'a RegistryKey);
+pub enum KeyMapFunctionResult<'a> {
+    IsPrefix(Keys),
+    FoundPrefix(Keys),
+    Found(KeyAction<'a>),
+    NotFound,
+}
 
 struct KeyMap(SequenceTrie<Key, RegistryKey>);
 
@@ -28,13 +37,6 @@ impl std::borrow::Borrow<[Key]> for Keys {
     fn borrow(&self) -> &[Key] {
         return &self.0;
     }
-}
-
-pub enum KeyMapFunctionResult<'a> {
-    IsPrefix(Keys),
-    FoundPrefix(Keys),
-    Found(KeyAction<'a>),
-    NotFound,
 }
 
 impl KeyMap {
@@ -295,6 +297,7 @@ pub struct Config {
     pub notification_style: NotificationStyle,
     pub file_open_program: String,
     pub url_open_program: String,
+    pub keymaps: Arc<KeyMaps>,
 }
 
 impl Config {
@@ -319,34 +322,17 @@ impl Config {
         Ok(self.data_dir()?.join("session"))
     }
 }
+pub struct KeyMaps(HashMap<Mode, KeyMap>);
 
-pub struct KeyMapping {
-    keymaps: HashMap<Mode, KeyMap>,
-    lua: Lua,
-}
-
-impl KeyMapping {
+impl KeyMaps {
     pub fn find_action<'a>(&'a self, mode: &Mode, keys: &Keys) -> KeyMapFunctionResult<'a> {
-        self.keymaps
+        self.0
             .get(&mode)
             .map(|keymap| keymap.find(keys))
             .unwrap_or(KeyMapFunctionResult::NotFound)
     }
-    pub fn run_action<'a>(
-        &'a self,
-        action: KeyAction<'a>,
-        c: &mut CommandContext,
-    ) -> rlua::Result<ActionResult> {
-        self.lua.context(|lua_ctx| {
-            lua_ctx.scope(|scope| {
-                let c = scope.create_nonstatic_userdata(c)?;
-                let action: rlua::Function = lua_ctx.registry_value(action.0).unwrap();
-                let res = action.call::<_, ActionResult>(c);
-                res
-            })
-        })
-    }
 }
+
 pub struct ConfigBuilder {
     keymaps: HashMap<Mode, KeyMap>,
     lua: Lua,
@@ -369,7 +355,7 @@ impl ConfigBuilder {
             url_open_program: DEFAULT_OPEN_PROG.to_owned(),
         }
     }
-    pub fn finalize(self) -> Result<(Config, KeyMapping), String> {
+    pub fn finalize(self) -> Result<(Config, CommandEnvironment), String> {
         Ok((
             Config {
                 host: self
@@ -380,11 +366,9 @@ impl ConfigBuilder {
                 notification_style: self.notification_style,
                 file_open_program: self.file_open_program,
                 url_open_program: self.url_open_program,
+                keymaps: Arc::new(KeyMaps(self.keymaps)),
             },
-            KeyMapping {
-                keymaps: self.keymaps,
-                lua: self.lua,
-            },
+            CommandEnvironment::new(self.lua),
         ))
     }
     pub fn set_host(&mut self, host: Url) {
