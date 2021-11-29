@@ -1,5 +1,4 @@
 use rlua::{Lua, RegistryKey, UserData, UserDataMethods};
-use std::str::FromStr;
 
 use matrix_sdk::Client;
 use unsegen::input::{Editable, Navigatable, OperationResult, Scrollable, Writable};
@@ -8,7 +7,7 @@ use unsegen::widget::builtin::TextEdit;
 use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
 
 use super::super::State;
-use super::{Mode, Tasks, TuiState};
+use super::{BuiltinMode, Mode, Tasks, TuiState};
 use crate::config::Config;
 
 pub struct KeyAction<'a>(pub &'a RegistryKey);
@@ -145,7 +144,9 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
         if !r.as_rooms().active_contains_current() {
             let _ = r.scroll_forwards(); // Implicitly select first
         }
-        c.tui_state.enter_mode(Mode::Normal).into()
+        c.tui_state
+            .enter_mode(Mode::Builtin(BuiltinMode::Normal))
+            .into()
     }),
     ("start_reply", |c| {
         if let Some(id) = &c.tui_state.current_room {
@@ -288,8 +289,8 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
 ];
 
 pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
-    ("type", |c, s| match c.tui_state.mode {
-        Mode::Normal | Mode::Insert => {
+    ("type", |c, s| match c.tui_state.mode.builtin_mode() {
+        BuiltinMode::Normal | BuiltinMode::Insert => {
             if let Some(room) = c.tui_state.current_room_state_mut() {
                 for ch in s.chars() {
                     room.msg_edit.write(ch).unwrap();
@@ -299,22 +300,22 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
                 ActionResult::Error("No current room".to_owned())
             }
         }
-        Mode::Command => {
+        BuiltinMode::Command => {
             for ch in s.chars() {
                 c.tui_state.command_line.write(ch).unwrap();
             }
             ActionResult::Ok
         }
-        Mode::RoomFilter | Mode::RoomFilterUnread => {
+        BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread => {
             for ch in s.chars() {
                 c.tui_state.room_filter_line.write(ch).unwrap();
             }
             ActionResult::Ok
         }
     }),
-    ("enter_mode", |c, s| match Mode::from_str(&s) {
-        Err(()) => ActionResult::Error(format!("'{}' is not a mode", s)),
-        Ok(m) => c.tui_state.enter_mode(m).into(),
+    ("enter_mode", |c, s| match c.config.modes.get(&s) {
+        None => ActionResult::Error(format!("'{}' is not a mode", s)),
+        Some(m) => c.tui_state.enter_mode(m).into(),
     }),
     ("react", |c, s| {
         if let Some(tui_room) = c.tui_state.current_room_state_mut() {

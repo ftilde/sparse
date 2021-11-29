@@ -11,7 +11,7 @@ use crate::tui_app::tui::{
         ActionResult, CommandContext, CommandEnvironment, KeyAction, ACTIONS_ARGS_NONE,
         ACTIONS_ARGS_STRING,
     },
-    Mode,
+    BuiltinMode, Mode, ModeSet,
 };
 
 const DEFAULT_OPEN_PROG: &str = "xdg-open";
@@ -239,12 +239,12 @@ impl UserData for &mut CommandContext<'_> {
     }
 }
 
-impl rlua::FromLua<'_> for Mode {
+impl rlua::FromLua<'_> for BuiltinMode {
     fn from_lua(lua_value: rlua::Value<'_>, _lua: rlua::Context<'_>) -> rlua::Result<Self> {
         if let rlua::Value::String(s) = lua_value {
             let s = s.to_str()?;
-            Mode::from_str(&s)
-                .map_err(|_| rlua::Error::RuntimeError(format!("'{}' is not a mode", s)))
+            BuiltinMode::from_str(&s)
+                .map_err(|_| rlua::Error::RuntimeError(format!("'{}' is not a builtin mode", s)))
         } else {
             Err(rlua::Error::RuntimeError(format!(
                 "'{:?}' is not a mode",
@@ -298,6 +298,7 @@ pub struct Config {
     pub file_open_program: String,
     pub url_open_program: String,
     pub keymaps: Arc<KeyMaps>,
+    pub modes: ModeSet,
 }
 
 impl Config {
@@ -341,6 +342,7 @@ pub struct ConfigBuilder {
     notification_style: NotificationStyle,
     file_open_program: String,
     url_open_program: String,
+    modes: ModeSet,
 }
 
 impl ConfigBuilder {
@@ -353,6 +355,7 @@ impl ConfigBuilder {
             notification_style: NotificationStyle::default(),
             file_open_program: DEFAULT_OPEN_PROG.to_owned(),
             url_open_program: DEFAULT_OPEN_PROG.to_owned(),
+            modes: ModeSet::new(),
         }
     }
     pub fn finalize(self) -> Result<(Config, CommandEnvironment), String> {
@@ -367,6 +370,7 @@ impl ConfigBuilder {
                 file_open_program: self.file_open_program,
                 url_open_program: self.url_open_program,
                 keymaps: Arc::new(KeyMaps(self.keymaps)),
+                modes: self.modes,
             },
             CommandEnvironment::new(self.lua),
         ))
@@ -380,6 +384,7 @@ impl ConfigBuilder {
     pub fn configure(&mut self, source: &str) -> rlua::Result<()> {
         //TODO maybe we can avoid these bindings with disjoint struct capturing in 2021 edition?
         let keymaps = std::cell::RefCell::new(&mut self.keymaps);
+        let modes = std::cell::RefCell::new(&mut self.modes);
         let host = &mut self.host;
         let user = &mut self.user;
         let notification_style = &mut self.notification_style;
@@ -404,9 +409,25 @@ impl ConfigBuilder {
 
             lua_ctx.scope(|scope| {
                 globals.set(
+                    "define_mode",
+                    scope.create_function_mut(
+                        |_lua_ctx, (name, mode): (String, BuiltinMode)| {
+                            let mut modes = modes.borrow_mut();
+                            modes.define(name.clone(), mode).map_err(|_e| {
+                                rlua::Error::RuntimeError(format!("Mode '{}' already exists", name))
+                            })
+                        },
+                    )?,
+                )?;
+
+                globals.set(
                     "bind",
                     scope.create_function_mut(
-                        |lua_ctx, (key, mode, action): (Keys, Mode, rlua::Function)| {
+                        |lua_ctx, (key, mode, action): (Keys, String, rlua::Function)| {
+                            let modes = modes.borrow_mut();
+                            let mode = modes.get(&mode).ok_or_else(|| {
+                                rlua::Error::RuntimeError(format!("Mode '{}' is not defined", mode))
+                            })?;
                             let mut keymaps = keymaps.borrow_mut();
                             let keymap = keymaps.entry(mode).or_default();
                             keymap.add_binding(key, &lua_ctx, action)?;
@@ -417,7 +438,11 @@ impl ConfigBuilder {
 
                 globals.set(
                     "unbind",
-                    scope.create_function_mut(|_lua_ctx, (key, mode): (Keys, Mode)| {
+                    scope.create_function_mut(|_lua_ctx, (key, mode_s): (Keys, String)| {
+                        let modes = modes.borrow_mut();
+                        let mode = modes.get(&mode_s).ok_or_else(|| {
+                            rlua::Error::RuntimeError(format!("Mode '{}' is not defined", mode_s))
+                        })?;
                         let mut keymaps = keymaps.borrow_mut();
                         let keymap = keymaps.entry(mode).or_default();
                         if let KeyMapFunctionResult::Found(_) = keymap.find(&key) {
@@ -426,7 +451,7 @@ impl ConfigBuilder {
                         } else {
                             Err(rlua::Error::RuntimeError(format!(
                                 "No binding of {} in mode {} exists",
-                                key, mode
+                                key, mode_s
                             )))
                         }
                     })?,

@@ -1,7 +1,9 @@
 use matrix_sdk::Client;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::io::stdout;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 use unsegen::base::*;
@@ -164,12 +166,17 @@ impl TuiState {
         s
     }
     fn enter_mode(&mut self, mode: Mode) -> OperationResult {
-        if !matches!(mode, Mode::RoomFilter | Mode::RoomFilterUnread)
-            && matches!(self.mode, Mode::RoomFilter | Mode::RoomFilterUnread)
+        let new = mode.builtin_mode();
+        let previous = self.mode.builtin_mode();
+        if !matches!(new, BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread)
+            && matches!(
+                previous,
+                BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread
+            )
         {
             let _ = self.room_filter_line.clear();
         }
-        if !matches!(mode, Mode::Command) && matches!(self.mode, Mode::Command) {
+        if !matches!(new, BuiltinMode::Command) && matches!(previous, BuiltinMode::Command) {
             let _ = self.command_line.clear();
         }
         if self.mode != mode {
@@ -232,7 +239,7 @@ fn bottom_bar<'a>(tui_state: &'a TuiState) -> impl Widget + 'a {
 
     if let Some(msg) = &tui_state.last_error_message {
         hlayout = hlayout.widget(msg)
-    } else if matches!(tui_state.mode, Mode::Command) {
+    } else if matches!(tui_state.mode.builtin_mode(), BuiltinMode::Command) {
         hlayout = hlayout.widget(tui_state.command_line.as_widget())
     }
 
@@ -251,7 +258,10 @@ fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl 
         hlayout = hlayout.widget_weighted(
             VLayout::new()
                 .widget(messages::Messages(state, tui_state, tasks))
-                .widget(msg_edit(current, matches!(tui_state.mode, Mode::Insert))),
+                .widget(msg_edit(
+                    current,
+                    matches!(tui_state.mode.builtin_mode(), BuiltinMode::Insert),
+                )),
             0.75,
         )
     }
@@ -359,14 +369,14 @@ pub async fn run_tui(
                         command_environment: &command_environment,
                     };
                     let input = input.chain(key_action_behavior(&mut c));
-                    match &mut tui_state.mode {
-                        Mode::Normal => {}
-                        Mode::Insert => {
+                    match tui_state.mode.builtin_mode() {
+                        BuiltinMode::Normal => {}
+                        BuiltinMode::Insert => {
                             if let Some(room) = tui_state.current_room_state_mut() {
                                 input.chain(EditBehavior::new(&mut room.msg_edit));
                             }
                         }
-                        Mode::Command => {
+                        BuiltinMode::Command => {
                             input
                                 .chain(
                                     EditBehavior::new(&mut tui_state.command_line)
@@ -379,7 +389,7 @@ pub async fn run_tui(
                                         .forwards_on(Key::Down),
                                 );
                         }
-                        Mode::RoomFilter | Mode::RoomFilterUnread => {
+                        BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread => {
                             input.chain(
                                 EditBehavior::new(&mut tui_state.room_filter_line)
                                     .delete_forwards_on(Key::Delete)
@@ -401,46 +411,99 @@ pub async fn run_tui(
     }
 }
 
-#[derive(Copy, Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub enum Mode {
+    Builtin(BuiltinMode),
+    Custom(String, BuiltinMode),
+}
+
+impl Mode {
+    fn builtin_mode(&self) -> BuiltinMode {
+        match self {
+            Mode::Builtin(m) => *m,
+            Mode::Custom(_, m) => *m,
+        }
+    }
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Mode::Builtin(m) => write!(f, "{}", m),
+            Mode::Custom(s, _) => write!(f, "{}", s),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Hash, PartialEq, Eq)]
+pub enum BuiltinMode {
     Normal,
     Insert,
     Command,
-    //Visual,
     RoomFilter,
     RoomFilterUnread,
 }
 
 impl std::default::Default for Mode {
     fn default() -> Self {
-        Mode::Normal
+        Mode::Builtin(BuiltinMode::Normal)
     }
 }
 
-impl std::str::FromStr for Mode {
+impl FromStr for BuiltinMode {
     type Err = ();
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Ok(match value {
-            "normal" => Mode::Normal,
-            "insert" => Mode::Insert,
-            "command" => Mode::Command,
-            "roomfilter" => Mode::RoomFilter,
-            "roomfilterunread" => Mode::RoomFilterUnread,
+            "normal" => BuiltinMode::Normal,
+            "insert" => BuiltinMode::Insert,
+            "command" => BuiltinMode::Command,
+            "roomfilter" => BuiltinMode::RoomFilter,
+            "roomfilterunread" => BuiltinMode::RoomFilterUnread,
             _ => return Err(()),
         })
     }
 }
 
-impl std::fmt::Display for Mode {
+impl std::fmt::Display for BuiltinMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            Mode::Normal => "normal",
-            Mode::Insert => "insert",
-            Mode::Command => "command",
-            Mode::RoomFilter => "roomfilter",
-            Mode::RoomFilterUnread => "roomfilterunread",
+            BuiltinMode::Normal => "normal",
+            BuiltinMode::Insert => "insert",
+            BuiltinMode::Command => "command",
+            BuiltinMode::RoomFilter => "roomfilter",
+            BuiltinMode::RoomFilterUnread => "roomfilterunread",
         };
         write!(f, "{}", s)
+    }
+}
+
+#[derive(Clone)]
+pub struct ModeSet {
+    custom: HashMap<String, BuiltinMode>,
+}
+
+impl ModeSet {
+    pub fn new() -> Self {
+        ModeSet {
+            custom: HashMap::new(),
+        }
+    }
+    pub fn define(&mut self, name: String, base: BuiltinMode) -> Result<(), ()> {
+        if self.get(&name).is_none() {
+            self.custom.insert(name, base);
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+    pub fn get(&self, name: &str) -> Option<Mode> {
+        if let Ok(m) = BuiltinMode::from_str(name) {
+            Some(Mode::Builtin(m))
+        } else if let Some(m) = self.custom.get(name) {
+            Some(Mode::Custom(name.to_string(), *m))
+        } else {
+            None
+        }
     }
 }

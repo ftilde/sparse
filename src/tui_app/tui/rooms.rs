@@ -5,7 +5,7 @@ use unsegen::widget::*;
 
 use matrix_sdk::ruma::identifiers::RoomId;
 
-use crate::tui_app::tui::{Mode, TuiState};
+use crate::tui_app::tui::{BuiltinMode, TuiState};
 use crate::tui_app::State;
 
 #[derive(Copy, Clone)]
@@ -24,7 +24,7 @@ impl<'a> Rooms<'a> {
         let s_lower = s.to_lowercase();
         let mixed = s != s_lower;
         let rooms = self.all_rooms();
-        let only_with_unread = matches!(self.1.mode, Mode::RoomFilterUnread);
+        let only_with_unread = matches!(self.1.mode.builtin_mode(), BuiltinMode::RoomFilterUnread);
         rooms.filter(move |(_i, r)| {
             let passes_filter_string = if mixed {
                 r.name().contains(s)
@@ -48,7 +48,8 @@ impl<'a> Rooms<'a> {
     pub fn as_widget(self) -> impl Widget + 'a {
         let mut layout = VLayout::new();
 
-        if let Mode::RoomFilter | Mode::RoomFilterUnread = &self.1.mode {
+        if let BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread = self.1.mode.builtin_mode()
+        {
             layout = layout.widget(
                 HLayout::new()
                     .widget("# ")
