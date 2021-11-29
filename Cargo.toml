@@ -50,4 +50,3 @@ branch = "sparse"
 # We use these until a new unsegen version is released
 [patch.crates-io]
 unsegen = { git = 'https://github.com/ftilde/unsegen' }
-

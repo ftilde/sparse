@@ -49,7 +49,7 @@ pub enum MessageSelection {
 
 struct RoomState {
     id: RoomId,
-    pub msg_edit: PromptLine,
+    pub msg_edit: TextEdit,
     msg_edit_type: SendMessageType,
     selection: MessageSelection,
 }
@@ -58,7 +58,7 @@ impl RoomState {
     fn at_last_message(id: RoomId) -> Self {
         RoomState {
             id,
-            msg_edit: PromptLine::with_prompt(" > ".to_owned()),
+            msg_edit: TextEdit::new(),
             msg_edit_type: SendMessageType::Simple,
             selection: MessageSelection::Newest,
         }
@@ -212,10 +212,14 @@ fn msg_edit<'a>(room_state: &'a RoomState, potentially_active: bool) -> impl Wid
         layout = layout.widget(format!("-> {}: {:?}", orig.sender, c));
     }
     layout.widget(
-        room_state
-            .msg_edit
-            .as_widget()
-            .with_hints(move |h| h.active(h.active && potentially_active)),
+        HLayout::new().widget("> ").widget(
+            room_state
+                .msg_edit
+                .as_widget()
+                .cursor_blink_on(StyleModifier::new().underline(true))
+                .cursor_inactive(StyleModifier::new().invert(BoolModifyMode::Toggle))
+                .with_hints(move |h| h.active(h.active && potentially_active)),
+        ),
     )
 }
 

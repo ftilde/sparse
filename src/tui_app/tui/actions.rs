@@ -2,8 +2,8 @@ use rlua::{Lua, RegistryKey, UserData, UserDataMethods};
 use std::str::FromStr;
 
 use matrix_sdk::Client;
-use unsegen::input::{Editable, OperationResult, Scrollable, Writable};
-use unsegen::widget::builtin::PromptLine;
+use unsegen::input::{Editable, Navigatable, OperationResult, Scrollable, Writable};
+use unsegen::widget::builtin::TextEdit;
 
 use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
 
@@ -256,12 +256,12 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             ActionResult::Error("No current room".to_owned())
         }
     }),
-    ("cursor_move_left", |c| {
-        with_msg_edit(c, |e| e.move_cursor_left())
-    }),
+    ("cursor_move_left", |c| with_msg_edit(c, |e| e.move_left())),
     ("cursor_move_right", |c| {
-        with_msg_edit(c, |e| e.move_cursor_right())
+        with_msg_edit(c, |e| e.move_right())
     }),
+    ("cursor_move_down", |c| with_msg_edit(c, |e| e.move_down())),
+    ("cursor_move_up", |c| with_msg_edit(c, |e| e.move_up())),
     ("cursor_delete_left", |c| {
         with_msg_edit(c, |e| e.delete_backwards())
     }),
@@ -371,7 +371,7 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
 
 fn with_msg_edit(
     c: &mut CommandContext,
-    mut f: impl FnMut(&mut PromptLine) -> OperationResult,
+    mut f: impl FnMut(&mut TextEdit) -> OperationResult,
 ) -> ActionResult {
     if let Some(room) = c.tui_state.current_room_state_mut() {
         let _ = f(&mut room.msg_edit);
