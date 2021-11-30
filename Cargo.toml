@@ -43,7 +43,7 @@ mime_guess = "2.0"
 #rev = "ee40d917d1f20230de3ad368df7fda17cda66deb"
 git = "https://github.com/ftilde/matrix-rust-sdk"
 branch = "sparse"
-#path = "../matrix-rust-sdk/matrix_sdk"
+#path = "../matrix-rust-sdk/crates/matrix-sdk"
 #default-features = false
 #features = ["encryption", "sled_cryptostore", "require_auth_for_profile_requests", "native-tls", "sled_state_store"]
 

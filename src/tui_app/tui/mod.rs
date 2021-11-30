@@ -13,7 +13,7 @@ use unsegen::widget::*;
 
 use matrix_sdk::ruma::{
     events::{
-        room::message::{MessageEventContent, MessageType},
+        room::message::{MessageType, RoomMessageEventContent},
         SyncMessageEvent,
     },
     identifiers::{EventId, RoomId},
@@ -75,10 +75,10 @@ impl RoomState {
                 let id = self.id.clone();
                 tokio::spawn(async move {
                     let content = match tmp_type {
-                        SendMessageType::Simple => MessageEventContent::text_plain(msg),
+                        SendMessageType::Simple => RoomMessageEventContent::text_plain(msg),
                         SendMessageType::Reply(orig_msg) => {
                             let m = orig_msg.into_full_event(id);
-                            MessageEventContent::text_reply_plain(msg, &m)
+                            RoomMessageEventContent::text_reply_plain(msg, &m)
                         }
                     };
                     room.send(
@@ -278,7 +278,7 @@ pub enum Event {
 #[derive(Debug)]
 pub enum SendMessageType {
     Simple,
-    Reply(SyncMessageEvent<MessageEventContent>),
+    Reply(SyncMessageEvent<RoomMessageEventContent>),
 }
 
 #[derive(Clone)]

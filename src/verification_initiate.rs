@@ -1,6 +1,6 @@
 use matrix_sdk::ruma::events::key::verification::VerificationMethod;
 
-use matrix_sdk::{self, Client, LoopCtrl, SyncSettings};
+use matrix_sdk::{self, config::SyncSettings, Client, LoopCtrl};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -72,8 +72,8 @@ pub async fn run(client: Client, id: String) -> Result<(), matrix_sdk::Error> {
     println!("Type 'yes' if the emoji or the numbers match:");
     if let Some(emoji) = sas.emoji() {
         print!("Emoji:");
-        for (e, description) in emoji {
-            print!("{} ({}) ", e, description);
+        for e in emoji {
+            print!("{} ({}) ", e.symbol, e.description);
         }
         println!();
     } else {

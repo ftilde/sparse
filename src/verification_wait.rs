@@ -1,16 +1,17 @@
 use matrix_sdk::{
     self,
+    config::SyncSettings,
+    encryption::verification::{SasVerification, Verification},
     ruma::events::AnyToDeviceEvent,
-    verification::{SasVerification, Verification},
-    Client, LoopCtrl, SyncSettings,
+    Client, LoopCtrl,
 };
 
 async fn wait_for_confirmation(sas: SasVerification) {
     println!("Type 'yes' if the emoji or the numbers match:");
     if let Some(emoji) = sas.emoji() {
         print!("Emoji:");
-        for (e, description) in emoji {
-            print!("{} ({}) ", e, description);
+        for e in emoji {
+            print!("{} ({}) ", e.symbol, e.description);
         }
         println!();
     }

@@ -4,7 +4,7 @@ mod tui_app;
 mod verification_initiate;
 mod verification_wait;
 
-use matrix_sdk::{self, Client, ClientConfig, Session};
+use matrix_sdk::{self, config::ClientConfig, Client, Session};
 
 use structopt::StructOpt;
 use url::Url;

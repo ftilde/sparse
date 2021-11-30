@@ -1,19 +1,21 @@
 use matrix_sdk::{
-    self, async_trait,
+    self,
+    config::SyncSettings,
     room::Room,
     ruma::api::client::r0::push::get_notifications::Notification,
     ruma::events::{
-        reaction::ReactionEventContent,
-        room::message::{MessageEventContent, MessageType},
         room::{
-            aliases::AliasesEventContent, canonical_alias::CanonicalAliasEventContent,
-            member::MemberEventContent, name::NameEventContent,
+            canonical_alias::RoomCanonicalAliasEventContent, member::RoomMemberEventContent,
+            message::RoomMessageEventContent, name::RoomNameEventContent,
         },
-        AnySyncMessageEvent, AnySyncRoomEvent, SyncMessageEvent, SyncStateEvent,
+        AnySyncRoomEvent, SyncMessageEvent, SyncStateEvent,
     },
     ruma::identifiers::{EventId, RoomId},
-    ruma::UserId,
-    Client, EventHandler, SyncSettings,
+    ruma::{
+        events::{room::message::MessageType, AnySyncMessageEvent},
+        UserId,
+    },
+    Client,
 };
 
 use crate::timeline;
@@ -185,107 +187,163 @@ impl Connection {
     }
 }
 
-#[async_trait]
-impl EventHandler for Connection {
-    // Handled in batches
-    async fn on_room_message(&self, room: Room, _event: &SyncMessageEvent<MessageEventContent>) {
-        let mut state = self.state.lock().await;
-        let m = &mut state.rooms.get_mut(&room.room_id()).unwrap().messages;
-        m.notify_new_messages();
-        self.update().await;
-    }
-    async fn on_room_reaction(&self, room: Room, _: &SyncMessageEvent<ReactionEventContent>) {
-        let mut state = self.state.lock().await;
-        let m = &mut state.rooms.get_mut(&room.room_id()).unwrap().messages;
-        m.notify_new_messages();
-        self.update().await;
-    }
-    async fn on_room_member(&self, room: Room, _: &SyncStateEvent<MemberEventContent>) {
-        self.update_room_info(room).await
-    }
-    async fn on_room_name(&self, room: Room, _: &SyncStateEvent<NameEventContent>) {
-        self.update_room_info(room).await
-    }
-    /// Fires when `Client` receives a `RoomEvent::RoomCanonicalAlias` event.
-    async fn on_room_canonical_alias(
-        &self,
-        room: Room,
-        _: &SyncStateEvent<CanonicalAliasEventContent>,
-    ) {
-        self.update_room_info(room).await
-    }
-    /// Fires when `Client` receives a `RoomEvent::RoomAliases` event.
-    async fn on_room_aliases(&self, room: Room, _: &SyncStateEvent<AliasesEventContent>) {
-        self.update_room_info(room).await
-    }
-    /// Fires when `Client` receives room events that trigger notifications
-    /// according to the push rules of the user.
-    async fn on_room_notification(&self, room: Room, notification: Notification) {
-        if notification
-            .actions
-            .iter()
-            .any(|t| matches!(t, matrix_sdk::ruma::push::Action::Notify))
-        {
-            use crate::config::NotificationStyle;
-            match notification.event.deserialize() {
-                Ok(e) => {
-                    if Some(e.sender()) != self.client.user_id().await.as_ref() {
-                        let sender = e.sender().to_string();
-                        let mut notification = notify_rust::Notification::new();
-                        let group_string = if room.is_direct() {
-                            format!("{}", sender)
-                        } else {
-                            let g = room
-                                .display_name()
-                                .await
-                                .unwrap_or_else(|_| "Unknown room".to_owned());
-                            format!("{} in {}", sender, g)
-                        };
-                        let content = match e {
-                            AnySyncRoomEvent::Message(m) => match m {
-                                AnySyncMessageEvent::RoomMessage(m) => match m.content.msgtype {
-                                    MessageType::Text(t) => t.body,
-                                    MessageType::Image(_) => String::from("sent an image"),
-                                    MessageType::Audio(_) => String::from("sent an audio message"),
-                                    MessageType::Video(_) => String::from("sent a video"),
-                                    MessageType::File(_) => String::from("sent a file"),
-                                    o => format!("{:?}", o),
-                                },
-                                o => format!("{:?}", o),
-                            },
-                            _ => String::new(),
-                        };
-                        match self.config.notification_style {
-                            NotificationStyle::Disabled => {}
-                            NotificationStyle::NameOnly => {
-                                notification.summary(&format!("{}", sender));
+async fn register_event_handlers<'a>(client: &'a Client, c: Connection) {
+    client
+        .register_event_handler({
+            let c = c.clone();
+            move |_ev: SyncMessageEvent<RoomMessageEventContent>, room: Room| {
+                let c = c.clone();
+                async move {
+                    let mut state = c.state.lock().await;
+                    let m = &mut state.rooms.get_mut(&room.room_id()).unwrap().messages;
+                    m.notify_new_messages();
+                    c.update().await;
+                }
+            }
+        })
+        .await
+        .register_event_handler({
+            let c = c.clone();
+            move |_: SyncStateEvent<RoomMemberEventContent>, room: Room| {
+                let c = c.clone();
+                async move {
+                    let mut state = c.state.lock().await;
+                    let m = &mut state.rooms.get_mut(&room.room_id()).unwrap().messages;
+                    m.notify_new_messages();
+                    c.update().await;
+                }
+            }
+        })
+        .await
+        .register_event_handler({
+            let c = c.clone();
+            move |_: SyncStateEvent<RoomMemberEventContent>, room: Room| {
+                let c = c.clone();
+                async move {
+                    c.update_room_info(room).await;
+                }
+            }
+        })
+        .await
+        .register_event_handler({
+            let c = c.clone();
+            move |_: SyncStateEvent<RoomNameEventContent>, room: Room| {
+                let c = c.clone();
+                async move {
+                    c.update_room_info(room).await;
+                }
+            }
+        })
+        .await
+        .register_event_handler({
+            let c = c.clone();
+            move |_: SyncStateEvent<RoomCanonicalAliasEventContent>, room: Room| {
+                let c = c.clone();
+                async move {
+                    c.update_room_info(room).await;
+                }
+            }
+        })
+        .await
+        .register_notification_handler({
+            let c = c.clone();
+            move |notification: Notification, room: Room, _: Client| {
+                let c = c.clone();
+                async move {
+                    if notification
+                        .actions
+                        .iter()
+                        .any(|t| matches!(t, matrix_sdk::ruma::push::Action::Notify))
+                    {
+                        use crate::config::NotificationStyle;
+                        match notification.event.deserialize() {
+                            Ok(e) => {
+                                if Some(e.sender()) != c.client.user_id().await.as_ref() {
+                                    let sender = e.sender().to_string();
+                                    let mut notification = notify_rust::Notification::new();
+                                    let group_string = if room.is_direct() {
+                                        format!("{}", sender)
+                                    } else {
+                                        let g = room
+                                            .display_name()
+                                            .await
+                                            .unwrap_or_else(|_| "Unknown room".to_owned());
+                                        format!("{} in {}", sender, g)
+                                    };
+                                    let content = match e {
+                                        AnySyncRoomEvent::Message(m) => match m {
+                                            AnySyncMessageEvent::RoomMessage(m) => match m
+                                                .content
+                                                .msgtype
+                                            {
+                                                MessageType::Text(t) => t.body,
+                                                MessageType::Image(_) => {
+                                                    String::from("sent an image")
+                                                }
+                                                MessageType::Audio(_) => {
+                                                    String::from("sent an audio message")
+                                                }
+                                                MessageType::Video(_) => {
+                                                    String::from("sent a video")
+                                                }
+                                                MessageType::File(_) => String::from("sent a file"),
+                                                o => format!("{:?}", o),
+                                            },
+                                            o => format!("{:?}", o),
+                                        },
+                                        _ => String::new(),
+                                    };
+                                    match c.config.notification_style {
+                                        NotificationStyle::Disabled => {}
+                                        NotificationStyle::NameOnly => {
+                                            notification.summary(&format!("{}", sender));
+                                        }
+                                        NotificationStyle::NameAndGroup => {
+                                            notification.summary(&group_string);
+                                        }
+                                        NotificationStyle::Full => {
+                                            notification.summary(&group_string);
+                                            notification.body(&format!("{}", content));
+                                        }
+                                    }
+                                    if !matches!(
+                                        c.config.notification_style,
+                                        NotificationStyle::Disabled
+                                    ) {
+                                        if let Err(e) = notification.show() {
+                                            tracing::error!("Failed to show notification {}", e);
+                                        }
+                                    }
+                                }
                             }
-                            NotificationStyle::NameAndGroup => {
-                                notification.summary(&group_string);
-                            }
-                            NotificationStyle::Full => {
-                                notification.summary(&group_string);
-                                notification.body(&format!("{}", content));
-                            }
-                        }
-                        if !matches!(self.config.notification_style, NotificationStyle::Disabled) {
-                            if let Err(e) = notification.show() {
-                                tracing::error!("Failed to show notification {}", e);
+                            Err(e) => {
+                                tracing::error!(
+                                    "can't deserialize event from notification: {:?}",
+                                    e
+                                )
                             }
                         }
                     }
+                    {
+                        let mut state = c.state.lock().await;
+                        let m = &mut state.rooms.get_mut(&room.room_id()).unwrap();
+                        m.num_unread_notifications =
+                            room.unread_notification_counts().notification_count;
+                        c.update().await;
+                    }
                 }
-                Err(e) => tracing::error!("can't deserialize event from notification: {:?}", e),
             }
-        }
-        {
-            let mut state = self.state.lock().await;
-            let m = &mut state.rooms.get_mut(&room.room_id()).unwrap();
-            m.num_unread_notifications = room.unread_notification_counts().notification_count;
-            self.update().await;
-        }
-    }
+        })
+        .await;
 }
+
+//#[async_trait]
+//impl EventHandler for Connection {
+//    /// Fires when `Client` receives room events that trigger notifications
+//    /// according to the push rules of the user.
+//    async fn on_room_notification(&self, room: Room, notification: Notification) {
+//    }
+//}
 
 async fn run_matrix_message_fetch_loop(
     c: Connection,
@@ -404,7 +462,7 @@ pub async fn run(
         config: config.clone(),
     };
 
-    client.set_event_handler(Box::new(connection.clone())).await;
+    register_event_handlers(&client, connection.clone()).await;
 
     let orig_attr = std::sync::Mutex::new(
         nix::sys::termios::tcgetattr(STDOUT).expect("Failed to get terminal attributes"),
