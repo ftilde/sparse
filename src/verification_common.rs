@@ -2,6 +2,7 @@ use matrix_sdk::encryption::verification::{SasVerification, Verification};
 use matrix_sdk::ruma::events::{key::verification::VerificationMethod, AnyToDeviceEvent};
 
 use matrix_sdk::{self, config::SyncSettings, Client, LoopCtrl};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 async fn wait_for_confirmation(sas: SasVerification) {
     println!("Type 'yes' if the emoji or the numbers match:");
@@ -52,7 +53,8 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
     let device_id = client.device_id().await.unwrap();
     let user_id = &user_id;
     let device_id = &device_id;
-    let mut we_started = false;
+    let we_started = AtomicBool::new(false);
+    let we_started = &we_started;
     client
         .sync_with_callback(SyncSettings::new(), |response| async move {
             for event in response
@@ -80,7 +82,7 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                                 .unwrap();
                             //println!("device {:?}", device);
                             let _sas = request.start_sas().await.unwrap();
-                            we_started = true;
+                            we_started.store(true, Ordering::SeqCst);
                             //println!("sas {:?}", sas);
                         }
                     }
@@ -97,7 +99,7 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                             //    .unwrap();
                             //println!("device {:?}", device);
                             let sas = request.start_sas().await.unwrap();
-                            we_started = true;
+                            we_started.store(true, Ordering::SeqCst);
                             println!("sas {:?}", sas);
                         }
                     }
@@ -108,8 +110,9 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                             .get_verification(&e.sender, &e.content.transaction_id)
                             .await
                         {
-                            let accept = if we_started {
+                            let accept = if we_started.load(Ordering::SeqCst) {
                                 use std::cmp::Ordering;
+                                println!("blub");
                                 match (
                                     sas.other_user_id().cmp(user_id),
                                     sas.other_device().device_id().cmp(device_id),
