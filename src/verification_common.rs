@@ -48,6 +48,11 @@ fn print_result(sas: &SasVerification) {
 }
 
 pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
+    let user_id = client.user_id().await.unwrap();
+    let device_id = client.device_id().await.unwrap();
+    let user_id = &user_id;
+    let device_id = &device_id;
+    let mut we_started = false;
     client
         .sync_with_callback(SyncSettings::new(), |response| async move {
             for event in response
@@ -75,6 +80,7 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                                 .unwrap();
                             //println!("device {:?}", device);
                             let _sas = request.start_sas().await.unwrap();
+                            we_started = true;
                             //println!("sas {:?}", sas);
                         }
                     }
@@ -91,6 +97,7 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                             //    .unwrap();
                             //println!("device {:?}", device);
                             let sas = request.start_sas().await.unwrap();
+                            we_started = true;
                             println!("sas {:?}", sas);
                         }
                     }
@@ -101,12 +108,31 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                             .get_verification(&e.sender, &e.content.transaction_id)
                             .await
                         {
-                            println!(
-                                "Starting verification with {} {}",
-                                &sas.other_device().user_id(),
-                                &sas.other_device().device_id()
-                            );
-                            sas.accept().await.unwrap();
+                            let accept = if we_started {
+                                use std::cmp::Ordering;
+                                match (
+                                    sas.other_user_id().cmp(user_id),
+                                    sas.other_device().device_id().cmp(device_id),
+                                ) {
+                                    (Ordering::Less, _) | (Ordering::Equal, Ordering::Less) => {
+                                        println!(
+                                            "Letting other user/device begin verification process"
+                                        );
+                                        false
+                                    }
+                                    _ => true,
+                                }
+                            } else {
+                                true
+                            };
+                            if accept {
+                                println!(
+                                    "Starting verification with {} {}",
+                                    &sas.other_device().user_id(),
+                                    &sas.other_device().device_id()
+                                );
+                                sas.accept().await.unwrap();
+                            }
                         }
                     }
 
