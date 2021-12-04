@@ -58,65 +58,45 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
             {
                 match event {
                     AnyToDeviceEvent::KeyVerificationRequest(e) => {
-                        println!("Request {:?}", e);
+                        println!("== Request {:?}", e);
                         let request = client
                             .get_verification_request(&e.sender, &e.content.transaction_id)
                             .await;
-                        println!("Got sas {:?}", request);
+                        //println!("Got sas {:?}", request);
                         if let Some(request) = request {
                             request
                                 .accept_with_methods(vec![VerificationMethod::SasV1])
                                 .await
                                 .unwrap();
 
-                            let device = client
+                            let _device = client
                                 .get_device(&e.sender, &e.content.from_device)
                                 .await
                                 .unwrap();
-                            println!("device {:?}", device);
-                            let sas = request.start_sas().await.unwrap();
-                            println!("sas {:?}", sas);
+                            //println!("device {:?}", device);
+                            let _sas = request.start_sas().await.unwrap();
+                            //println!("sas {:?}", sas);
                         }
-                        //if let Some(Verification::SasV1(sas)) = sas {
-                        //    println!(
-                        //        "Accepting verification with {} {}",
-                        //        &sas.other_device().user_id(),
-                        //        &sas.other_device().device_id()
-                        //    );
-                        //    sas.accept().await.unwrap();
-                        //}
                     }
                     AnyToDeviceEvent::KeyVerificationReady(e) => {
-                        println!("Request {:?}", e);
+                        println!("== Ready {:?}", e);
                         let request = client
                             .get_verification_request(&e.sender, &e.content.transaction_id)
                             .await;
                         println!("Got sas {:?}", request);
                         if let Some(request) = request {
-                            request
-                                .accept_with_methods(vec![VerificationMethod::SasV1])
-                                .await
-                                .unwrap();
-
-                            let device = client
-                                .get_device(&e.sender, &e.content.from_device)
-                                .await
-                                .unwrap();
-                            println!("device {:?}", device);
+                            //let device = client
+                            //    .get_device(&e.sender, &e.content.from_device)
+                            //    .await
+                            //    .unwrap();
+                            //println!("device {:?}", device);
                             let sas = request.start_sas().await.unwrap();
                             println!("sas {:?}", sas);
                         }
-                        //if let Some(Verification::SasV1(sas)) = sas {
-                        //    println!(
-                        //        "Accepting verification with {} {}",
-                        //        &sas.other_device().user_id(),
-                        //        &sas.other_device().device_id()
-                        //    );
-                        //    sas.accept().await.unwrap();
-                        //}
                     }
 
                     AnyToDeviceEvent::KeyVerificationStart(e) => {
+                        println!("== Start: {:?}", e);
                         if let Some(Verification::SasV1(sas)) = client
                             .get_verification(&e.sender, &e.content.transaction_id)
                             .await
@@ -131,6 +111,7 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                     }
 
                     AnyToDeviceEvent::KeyVerificationKey(e) => {
+                        println!("== Key: {:?}", e);
                         if let Some(Verification::SasV1(sas)) = client
                             .get_verification(&e.sender, &e.content.transaction_id)
                             .await
@@ -140,6 +121,20 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                     }
 
                     AnyToDeviceEvent::KeyVerificationMac(e) => {
+                        println!("== Mac: {:?}", e);
+                        if let Some(Verification::SasV1(sas)) = client
+                            .get_verification(&e.sender, &e.content.transaction_id)
+                            .await
+                        {
+                            if sas.is_done() {
+                                print_result(&sas);
+                                return LoopCtrl::Break;
+                            }
+                        }
+                    }
+
+                    AnyToDeviceEvent::KeyVerificationAccept(e) => {
+                        println!("== Accept: {:?}", e);
                         if let Some(Verification::SasV1(sas)) = client
                             .get_verification(&e.sender, &e.content.transaction_id)
                             .await
