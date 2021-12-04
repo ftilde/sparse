@@ -2,8 +2,6 @@ use matrix_sdk::encryption::verification::{SasVerification, Verification};
 use matrix_sdk::ruma::events::{key::verification::VerificationMethod, AnyToDeviceEvent};
 
 use matrix_sdk::{self, config::SyncSettings, Client, LoopCtrl};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 async fn wait_for_confirmation(sas: SasVerification) {
     println!("Type 'yes' if the emoji or the numbers match:");
@@ -60,7 +58,36 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
             {
                 match event {
                     AnyToDeviceEvent::KeyVerificationRequest(e) => {
-                        println!("Got request {:?}", e);
+                        println!("Request {:?}", e);
+                        let request = client
+                            .get_verification_request(&e.sender, &e.content.transaction_id)
+                            .await;
+                        println!("Got sas {:?}", request);
+                        if let Some(request) = request {
+                            request
+                                .accept_with_methods(vec![VerificationMethod::SasV1])
+                                .await
+                                .unwrap();
+
+                            let device = client
+                                .get_device(&e.sender, &e.content.from_device)
+                                .await
+                                .unwrap();
+                            println!("device {:?}", device);
+                            let sas = request.start_sas().await.unwrap();
+                            println!("sas {:?}", sas);
+                        }
+                        //if let Some(Verification::SasV1(sas)) = sas {
+                        //    println!(
+                        //        "Accepting verification with {} {}",
+                        //        &sas.other_device().user_id(),
+                        //        &sas.other_device().device_id()
+                        //    );
+                        //    sas.accept().await.unwrap();
+                        //}
+                    }
+                    AnyToDeviceEvent::KeyVerificationReady(e) => {
+                        println!("Request {:?}", e);
                         let request = client
                             .get_verification_request(&e.sender, &e.content.transaction_id)
                             .await;
@@ -122,6 +149,10 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                                 return LoopCtrl::Break;
                             }
                         }
+                    }
+                    AnyToDeviceEvent::KeyVerificationCancel(e) => {
+                        println!("Verification has been canceled {}", e.content.reason);
+                        return LoopCtrl::Break;
                     }
                     o => {
                         println!("other event {:?}", o);
