@@ -1,4 +1,5 @@
-use matrix_sdk::ruma::events::key::verification::VerificationMethod;
+use matrix_sdk::encryption::verification::{SasVerification, Verification};
+use matrix_sdk::ruma::events::{key::verification::VerificationMethod, AnyToDeviceEvent};
 
 use matrix_sdk::{self, config::SyncSettings, Client, LoopCtrl};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,10 +22,54 @@ pub async fn sleep() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 }
 
+async fn wait_for_confirmation2(sas: SasVerification) {
+    println!("Type 'yes' if the emoji or the numbers match:");
+    if let Some(emoji) = sas.emoji() {
+        print!("Emoji:");
+        for e in emoji {
+            print!("{} ({}) ", e.symbol, e.description);
+        }
+        println!();
+    }
+    if let Some((n1, n2, n3)) = sas.decimals() {
+        println!("Numbers: {}-{}-{}", n1, n2, n3);
+    }
+
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .expect("error: unable to read user input");
+
+    match input.trim().to_lowercase().as_ref() {
+        "yes" => {
+            sas.confirm().await.unwrap();
+
+            if sas.is_done() {
+                print_result(&sas);
+            }
+        }
+        _ => {
+            println!("Canceled verification.");
+            sas.cancel().await.unwrap();
+        }
+    }
+}
+
+fn print_result(sas: &SasVerification) {
+    let device = sas.other_device();
+
+    println!(
+        "Successfully verified device {} {} {:?}",
+        device.user_id(),
+        device.device_id(),
+        device.local_trust_state()
+    );
+}
+
 pub async fn run(client: Client, id: String) -> Result<(), matrix_sdk::Error> {
     eprintln!("Warning: Initiated device verification is still broken.");
 
-    let _ = client.sync_once(SyncSettings::new()).await?;
+    let res = client.sync_once(SyncSettings::new()).await?;
     let user_id = client.user_id().await.unwrap();
     let device = client
         .get_device(&user_id, id.as_str().into())
@@ -35,15 +80,23 @@ pub async fn run(client: Client, id: String) -> Result<(), matrix_sdk::Error> {
         .request_verification_with_methods(vec![VerificationMethod::SasV1])
         .await?;
 
+    println!("0");
     client
-        .sync_with_callback(SyncSettings::new(), |_| async {
-            if verification.is_ready() || verification.is_cancelled() {
-                LoopCtrl::Break
-            } else {
-                LoopCtrl::Continue
-            }
-        })
+        .sync_with_callback(
+            SyncSettings::new()
+                .timeout(std::time::Duration::from_secs(1))
+                .token(res.next_batch),
+            |_| async {
+                println!("sync0");
+                if verification.is_ready() || verification.is_cancelled() {
+                    LoopCtrl::Break
+                } else {
+                    LoopCtrl::Continue
+                }
+            },
+        )
         .await;
+    println!("1");
     if verification.is_cancelled() {
         println!("Verification canceled while waiting for other device to be ready.");
         return Ok(());
@@ -54,6 +107,59 @@ pub async fn run(client: Client, id: String) -> Result<(), matrix_sdk::Error> {
         println!("Verification canceled (No sas).");
         return Ok(());
     };
+    println!("2");
+    println!("3");
+
+    let c2 = &client;
+    client
+        .sync_with_callback(SyncSettings::new(), |response| async move {
+            for event in response
+                .to_device
+                .events
+                .iter()
+                .filter_map(|e| e.deserialize().ok())
+            {
+                match event {
+                    AnyToDeviceEvent::KeyVerificationStart(e) => {
+                        if let Some(Verification::SasV1(sas)) = c2
+                            .get_verification(&e.sender, &e.content.transaction_id)
+                            .await
+                        {
+                            println!(
+                                "Starting verification with {} {}",
+                                &sas.other_device().user_id(),
+                                &sas.other_device().device_id()
+                            );
+                            sas.accept().await.unwrap();
+                        }
+                    }
+
+                    AnyToDeviceEvent::KeyVerificationKey(e) => {
+                        if let Some(Verification::SasV1(sas)) = c2
+                            .get_verification(&e.sender, &e.content.transaction_id)
+                            .await
+                        {
+                            tokio::spawn(wait_for_confirmation2(sas));
+                        }
+                    }
+
+                    AnyToDeviceEvent::KeyVerificationMac(e) => {
+                        if let Some(Verification::SasV1(sas)) = c2
+                            .get_verification(&e.sender, &e.content.transaction_id)
+                            .await
+                        {
+                            if sas.is_done() {
+                                print_result(&sas);
+                                return LoopCtrl::Break;
+                            }
+                        }
+                    }
+                    _ => (),
+                }
+            }
+            LoopCtrl::Continue
+        })
+        .await;
 
     client
         .sync_with_callback(SyncSettings::new(), |_| async {
