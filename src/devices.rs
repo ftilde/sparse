@@ -1,6 +1,14 @@
-use matrix_sdk::Client;
+use matrix_sdk::{config::SyncSettings, Client};
 
 pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
+    let _ = client
+        .sync_once(
+            SyncSettings::new()
+                .full_state(true)
+                .token(client.sync_token().await.unwrap()),
+        )
+        .await?;
+
     let response = client
         .devices()
         .await
