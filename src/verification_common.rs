@@ -187,6 +187,18 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                         println!("Verification has been canceled {}", e.content.reason);
                         return LoopCtrl::Break;
                     }
+                    AnyToDeviceEvent::KeyVerificationDone(e) => {
+                        println!("== Done: {:?}", e);
+                        if let Some(Verification::SasV1(sas)) = client
+                            .get_verification(&e.sender, &e.content.transaction_id)
+                            .await
+                        {
+                            if sas.is_done() {
+                                print_result(&sas);
+                                return LoopCtrl::Break;
+                            }
+                        }
+                    }
                     o => {
                         println!("other event {:?}", o);
                     }
