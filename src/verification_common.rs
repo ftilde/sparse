@@ -5,7 +5,7 @@ use matrix_sdk::{self, config::SyncSettings, Client, LoopCtrl};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 async fn wait_for_confirmation(sas: SasVerification) {
-    println!("Type 'yes' if the emoji or the numbers match:");
+    println!("Type 'yes' if the emoji or the numbers match or 'no' if they don't:");
     if let Some(emoji) = sas.emoji() {
         print!("Emoji:");
         for e in emoji {
@@ -17,22 +17,29 @@ async fn wait_for_confirmation(sas: SasVerification) {
         println!("Numbers: {}-{}-{}", n1, n2, n3);
     }
 
-    let mut input = String::new();
-    std::io::stdin()
-        .read_line(&mut input)
-        .expect("error: unable to read user input");
+    loop {
+        let mut input = String::new();
+        std::io::stdin()
+            .read_line(&mut input)
+            .expect("error: unable to read user input");
 
-    match input.trim().to_lowercase().as_ref() {
-        "yes" => {
-            sas.confirm().await.unwrap();
+        match input.trim().to_lowercase().as_ref() {
+            "yes" => {
+                sas.confirm().await.unwrap();
 
-            if sas.is_done() {
-                print_result(&sas);
+                if sas.is_done() {
+                    print_result(&sas);
+                }
+                break;
             }
-        }
-        _ => {
-            println!("Canceled verification.");
-            sas.cancel().await.unwrap();
+            "no" => {
+                println!("Canceled verification.");
+                sas.cancel().await.unwrap();
+                break;
+            }
+            _ => {
+                println!("Please type 'yes' or 'no'");
+            }
         }
     }
 }
