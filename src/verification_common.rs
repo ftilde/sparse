@@ -117,7 +117,9 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                                     sas.other_user_id().cmp(user_id),
                                     sas.other_device().device_id().cmp(device_id),
                                 ) {
-                                    (Ordering::Less, _) | (Ordering::Equal, Ordering::Less) => {
+                                    //(Ordering::Less, _) | (Ordering::Equal, Ordering::Less) => {
+                                    (Ordering::Less, _) | (Ordering::Equal, Ordering::Greater) => {
+                                        //TODO: change back to less. This is only for debuggping purposes
                                         println!(
                                             "Letting other user/device begin verification process"
                                         );
