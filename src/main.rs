@@ -50,7 +50,10 @@ async fn try_restore_session(
 async fn login(config: &Config) -> Result<Client, String> {
     // the location for `JsonStore` to save files to
     let data_dir = config.data_dir()?;
-    let client_config = ClientConfig::new().store_path(data_dir);
+    let client_config = ClientConfig::new()
+        .store_path(data_dir)
+        .user_agent(APP_NAME)
+        .unwrap();
     // create a new Client with the given homeserver url and config
     let client = match Client::new_with_config(config.host.clone(), client_config) {
         Ok(client) => client,
