@@ -1,4 +1,5 @@
 mod devices;
+mod logout;
 mod timeline;
 mod tui_app;
 mod verification_common;
@@ -121,11 +122,19 @@ struct VerifyInitiate {
 }
 
 #[derive(StructOpt, Clone)]
+struct Logout {
+    #[structopt(required = true)]
+    device_ids: Vec<String>,
+}
+
+#[derive(StructOpt, Clone)]
 enum Command {
     #[structopt(about = "Start the interactive tui client (the default action)")]
     Tui,
     #[structopt(about = "List registered devices")]
     Devices,
+    #[structopt(about = "Log out (delete) devices from the server")]
+    Logout(Logout),
     #[structopt(about = "Start verification of a specific device")]
     VerifyInitiate(VerifyInitiate),
     #[structopt(about = "Wait for incoming device verifications")]
@@ -214,6 +223,7 @@ async fn tokio_main(options: Options) -> Result<(), Box<dyn std::error::Error>> 
     match command {
         Command::Tui => tui_app::run(client, config, key_mapping).await?,
         Command::Devices => devices::run(client).await?,
+        Command::Logout(l) => logout::run(client, l.device_ids).await?,
         Command::VerifyInitiate(v) => {
             verification_initiate::run(client, v.device_id.clone()).await?
         }
