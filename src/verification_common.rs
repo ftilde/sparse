@@ -72,11 +72,10 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
             {
                 match event {
                     AnyToDeviceEvent::KeyVerificationRequest(e) => {
-                        println!("== Request {:?}", e);
+                        tracing::debug!("== Request {:?}", e);
                         let request = client
                             .get_verification_request(&e.sender, &e.content.transaction_id)
                             .await;
-                        //println!("Got sas {:?}", request);
                         if let Some(request) = request {
                             request
                                 .accept_with_methods(vec![VerificationMethod::SasV1])
@@ -87,18 +86,15 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                                 .get_device(&e.sender, &e.content.from_device)
                                 .await
                                 .unwrap();
-                            //println!("device {:?}", device);
                             let _sas = request.start_sas().await.unwrap();
                             we_started.store(true, Ordering::SeqCst);
-                            //println!("sas {:?}", sas);
                         }
                     }
                     AnyToDeviceEvent::KeyVerificationReady(e) => {
-                        println!("== Ready {:?}", e);
+                        tracing::debug!("== Ready {:?}", e);
                         let request = client
                             .get_verification_request(&e.sender, &e.content.transaction_id)
                             .await;
-                        println!("Got sas {:?}", request);
                         if let Some(request) = request {
                             let sas = request.start_sas().await.unwrap();
                             we_started.store(true, Ordering::SeqCst);
@@ -107,7 +103,7 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                     }
 
                     AnyToDeviceEvent::KeyVerificationStart(e) => {
-                        println!("== Start: {:?}", e);
+                        tracing::debug!("== Start: {:?}", e);
                         if let Some(Verification::SasV1(sas)) = client
                             .get_verification(&e.sender, &e.content.transaction_id)
                             .await
@@ -143,7 +139,7 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                     }
 
                     AnyToDeviceEvent::KeyVerificationKey(e) => {
-                        println!("== Key: {:?}", e);
+                        tracing::debug!("== Key: {:?}", e);
                         if let Some(Verification::SasV1(sas)) = client
                             .get_verification(&e.sender, &e.content.transaction_id)
                             .await
@@ -153,7 +149,7 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                     }
 
                     AnyToDeviceEvent::KeyVerificationMac(e) => {
-                        println!("== Mac: {:?}", e);
+                        tracing::debug!("== Mac: {:?}", e);
                         if let Some(Verification::SasV1(sas)) = client
                             .get_verification(&e.sender, &e.content.transaction_id)
                             .await
@@ -166,7 +162,7 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                     }
 
                     AnyToDeviceEvent::KeyVerificationAccept(e) => {
-                        println!("== Accept: {:?}", e);
+                        tracing::debug!("== Accept: {:?}", e);
                         if let Some(Verification::SasV1(sas)) = client
                             .get_verification(&e.sender, &e.content.transaction_id)
                             .await
@@ -182,7 +178,7 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                         return LoopCtrl::Break;
                     }
                     AnyToDeviceEvent::KeyVerificationDone(e) => {
-                        println!("== Done: {:?}", e);
+                        tracing::debug!("== Done: {:?}", e);
                         if let Some(Verification::SasV1(sas)) = client
                             .get_verification(&e.sender, &e.content.transaction_id)
                             .await
@@ -194,7 +190,7 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                         }
                     }
                     o => {
-                        println!("other event {:?}", o);
+                        tracing::debug!("other event {:?}", o);
                     }
                 }
             }
