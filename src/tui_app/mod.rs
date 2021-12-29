@@ -29,7 +29,7 @@ use unsegen::base::Color;
 
 pub mod tui;
 
-type UserColors = BTreeMap<UserId, Color>;
+type UserColors = BTreeMap<Box<UserId>, Color>;
 
 async fn calculate_user_colors(room: &Room) -> UserColors {
     let available_colors = [
@@ -91,7 +91,7 @@ async fn calculate_user_colors(room: &Room) -> UserColors {
 pub struct RoomState {
     pub messages: timeline::RoomTimelineCache,
     name: String,
-    latest_read_message: Option<EventId>,
+    latest_read_message: Option<Box<EventId>>,
     num_unread_notifications: u64,
     user_colors: UserColors,
 }
@@ -113,11 +113,11 @@ impl RoomState {
         }
     }
 
-    pub fn mark_newest_event_as_read(&mut self) -> Option<EventId> {
+    pub fn mark_newest_event_as_read(&mut self) -> Option<Box<EventId>> {
         self.num_unread_notifications = 0;
-        let latest = self.messages.end().cloned();
-        if latest.is_some() && self.latest_read_message != latest {
-            self.latest_read_message = latest;
+        let latest = self.messages.end_id();
+        if latest.is_some() && self.latest_read_message.as_deref() != latest {
+            self.latest_read_message = latest.map(|e| e.to_owned());
             self.latest_read_message.clone()
         } else {
             None
@@ -135,7 +135,7 @@ impl RoomState {
 }
 
 pub struct State {
-    pub rooms: BTreeMap<RoomId, RoomState>,
+    pub rooms: BTreeMap<Box<RoomId>, RoomState>,
 }
 
 async fn run_matrix_event_loop(connection: Connection) {
@@ -176,7 +176,7 @@ impl Connection {
                 } else {
                     state
                         .rooms
-                        .insert(room.room_id().clone(), RoomState::from_room(&room).await);
+                        .insert(room.room_id().to_owned(), RoomState::from_room(&room).await);
                 }
             }
             Room::Left(room) => {
@@ -195,7 +195,7 @@ async fn register_event_handlers<'a>(client: &'a Client, c: Connection) {
                 let c = c.clone();
                 async move {
                     let mut state = c.state.lock().await;
-                    let m = &mut state.rooms.get_mut(&room.room_id()).unwrap().messages;
+                    let m = &mut state.rooms.get_mut(room.room_id()).unwrap().messages;
                     m.notify_new_messages();
                     c.update().await;
                 }
@@ -208,7 +208,7 @@ async fn register_event_handlers<'a>(client: &'a Client, c: Connection) {
                 let c = c.clone();
                 async move {
                     let mut state = c.state.lock().await;
-                    let m = &mut state.rooms.get_mut(&room.room_id()).unwrap().messages;
+                    let m = &mut state.rooms.get_mut(room.room_id()).unwrap().messages;
                     m.notify_new_messages();
                     c.update().await;
                 }
@@ -258,7 +258,7 @@ async fn register_event_handlers<'a>(client: &'a Client, c: Connection) {
                         use crate::config::NotificationStyle;
                         match notification.event.deserialize() {
                             Ok(e) => {
-                                if Some(e.sender()) != c.client.user_id().await.as_ref() {
+                                if Some(e.sender()) != c.client.user_id().await.as_deref() {
                                     let sender = e.sender().to_string();
                                     let mut notification = notify_rust::Notification::new();
                                     let group_string = if room.is_direct() {
@@ -326,7 +326,7 @@ async fn register_event_handlers<'a>(client: &'a Client, c: Connection) {
                     }
                     {
                         let mut state = c.state.lock().await;
-                        let m = &mut state.rooms.get_mut(&room.room_id()).unwrap();
+                        let m = &mut state.rooms.get_mut(room.room_id()).unwrap();
                         m.num_unread_notifications =
                             room.unread_notification_counts().notification_count;
                         c.update().await;
@@ -352,14 +352,14 @@ async fn run_matrix_message_fetch_loop(
     while tasks.changed().await.is_ok() {
         let task = { tasks.borrow().clone() };
         if let Some(task) = task {
-            let rid = &task.room;
+            let rid = task.room.as_ref();
             let room = c.client.get_room(rid).unwrap();
 
             let query = {
                 let state = c.state.lock().await;
-                let m = state.rooms.get(&rid).unwrap();
+                let m = state.rooms.get(rid).unwrap();
 
-                m.messages.events_query(room, task.kind)
+                m.messages.events_query(&c.client, room, task.kind).await
             };
 
             let res = query.await.unwrap();
@@ -444,7 +444,7 @@ pub async fn run(
     for room in client.joined_rooms() {
         let id = room.room_id();
         if let Some(room) = client.get_room(id) {
-            rooms.insert(id.clone(), RoomState::from_room(&room).await);
+            rooms.insert(id.to_owned(), RoomState::from_room(&room).await);
         }
     }
     {

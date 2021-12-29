@@ -38,7 +38,7 @@ pub struct Tasks<'a> {
 }
 
 impl Tasks<'_> {
-    fn set_message_query(&self, room: RoomId, query: MessageQuery) {
+    fn set_message_query(&self, room: Box<RoomId>, query: MessageQuery) {
         let mut q = self.message_query.borrow_mut();
         *q = Some(MessageQueryRequest { room, kind: query });
     }
@@ -46,18 +46,18 @@ impl Tasks<'_> {
 
 pub enum MessageSelection {
     Newest,
-    Specific(EventId),
+    Specific(Box<EventId>),
 }
 
 struct RoomState {
-    id: RoomId,
+    id: Box<RoomId>,
     pub msg_edit: TextEdit,
     msg_edit_type: SendMessageType,
     selection: MessageSelection,
 }
 
 impl RoomState {
-    fn at_last_message(id: RoomId) -> Self {
+    fn at_last_message(id: Box<RoomId>) -> Self {
         RoomState {
             id,
             msg_edit: TextEdit::new(),
@@ -97,7 +97,7 @@ impl RoomState {
         }
     }
 }
-fn send_read_receipt(c: &Client, rid: RoomId, eid: EventId) {
+fn send_read_receipt(c: &Client, rid: Box<RoomId>, eid: Box<EventId>) {
     if let Some(room) = c.get_joined_room(&rid) {
         tokio::spawn(async move {
             room.read_receipt(&eid).await.unwrap();
@@ -108,8 +108,8 @@ fn send_read_receipt(c: &Client, rid: RoomId, eid: EventId) {
 }
 
 pub struct TuiState {
-    current_room: Option<RoomId>,
-    rooms: BTreeMap<RoomId, RoomState>,
+    current_room: Option<Box<RoomId>>,
+    rooms: BTreeMap<Box<RoomId>, RoomState>,
     mode: Mode,
     room_filter_line: LineEdit,
     command_line: PromptLine,
@@ -152,7 +152,7 @@ fn key_action_behavior<'a>(
 }
 
 impl TuiState {
-    fn new(current_room: Option<RoomId>) -> Self {
+    fn new(current_room: Option<Box<RoomId>>) -> Self {
         let mut s = TuiState {
             rooms: BTreeMap::new(),
             current_room: None,
@@ -186,11 +186,11 @@ impl TuiState {
             Err(())
         }
     }
-    fn set_current_room(&mut self, id: Option<RoomId>) {
+    fn set_current_room(&mut self, id: Option<Box<RoomId>>) {
         if let Some(id) = &id {
             if !self.rooms.contains_key(id) {
                 self.rooms
-                    .insert(id.clone(), RoomState::at_last_message(id.clone()));
+                    .insert(id.clone(), RoomState::at_last_message(id.to_owned()));
             }
         }
         self.current_room = id;
@@ -283,7 +283,7 @@ pub enum SendMessageType {
 
 #[derive(Clone)]
 pub struct MessageQueryRequest {
-    pub room: RoomId,
+    pub room: Box<RoomId>,
     pub kind: MessageQuery,
 }
 

@@ -1,7 +1,10 @@
-use matrix_sdk::ruma::api::client::r0::message::get_message_events::Direction;
+use matrix_sdk::ruma::api::client::r0::message::get_message_events::{self, Direction};
 use matrix_sdk::{
-    deserialized_responses::SyncRoomEvent, room::Room, ruma::events::AnySyncRoomEvent,
+    deserialized_responses::RoomEvent,
+    room::{Messages, Room},
+    ruma::events::{AnyRoomEvent, AnySyncRoomEvent},
     ruma::identifiers::EventId,
+    Client,
 };
 use std::collections::VecDeque;
 
@@ -16,6 +19,8 @@ pub struct RoomTimelineCache {
     messages: VecDeque<Event>,
     begin: CacheEndState,
     end: CacheEndState,
+    begin_token: Option<String>,
+    end_token: Option<String>,
 }
 
 impl std::default::Default for RoomTimelineCache {
@@ -24,6 +29,8 @@ impl std::default::Default for RoomTimelineCache {
             messages: VecDeque::new(),
             begin: CacheEndState::Open,
             end: CacheEndState::Open,
+            begin_token: None,
+            end_token: None,
         }
     }
 }
@@ -31,7 +38,7 @@ impl std::default::Default for RoomTimelineCache {
 #[derive(Debug, Clone)]
 pub enum EventWalkResult<'a> {
     Message(RoomTimelineIndex<'a>),
-    RequiresFetchFrom(EventId),
+    RequiresFetch,
     End,
 }
 
@@ -62,6 +69,8 @@ impl<'a> EventWalkResultNewest<'a> {
     }
 }
 
+const QUERY_BATCH_SIZE_LIMIT: u32 = 10;
+
 #[derive(Copy, Clone, Debug)]
 pub struct RoomTimelineIndex<'a> {
     pos: usize,
@@ -78,11 +87,14 @@ impl RoomTimelineIndex<'_> {
 }
 
 impl RoomTimelineCache {
-    pub fn begin(&self) -> Option<&EventId> {
-        self.messages.front().map(|m| m.event_id())
+    pub fn begin_token(&self) -> Option<&str> {
+        self.begin_token.as_deref()
     }
-    pub fn end(&self) -> Option<&EventId> {
-        self.messages.back().map(|m| m.event_id())
+    pub fn end_token(&self) -> Option<&str> {
+        self.end_token.as_deref()
+    }
+    pub fn end_id(&self) -> Option<&EventId> {
+        self.messages.back().map(|e| e.event_id())
     }
 
     fn clear(&mut self) {
@@ -120,7 +132,7 @@ impl RoomTimelineCache {
         if let Some((i, _)) = self.find(id) {
             EventWalkResult::Message(RoomTimelineIndex::new(i))
         } else {
-            EventWalkResult::RequiresFetchFrom(id.clone())
+            EventWalkResult::RequiresFetch
         }
     }
 
@@ -149,12 +161,7 @@ impl RoomTimelineCache {
         } else {
             match self.end {
                 CacheEndState::Reached => EventWalkResult::End,
-                CacheEndState::Open => {
-                    let id = self
-                        .end()
-                        .expect("Since we have pos, messages cannot be empty");
-                    EventWalkResult::RequiresFetchFrom(id.clone())
-                }
+                CacheEndState::Open => EventWalkResult::RequiresFetch,
             }
         }
     }
@@ -164,42 +171,62 @@ impl RoomTimelineCache {
         } else {
             match self.begin {
                 CacheEndState::Reached => EventWalkResult::End,
-                CacheEndState::Open => {
-                    let id = self
-                        .begin()
-                        .expect("Since we have pos, messages cannot be empty");
-                    EventWalkResult::RequiresFetchFrom(id.clone())
-                }
+                CacheEndState::Open => EventWalkResult::RequiresFetch,
             }
         }
     }
 
-    pub fn events_query(
+    pub async fn events_query(
         &self,
+        client: &Client,
         room: Room,
         query: MessageQuery,
     ) -> impl std::future::Future<Output = matrix_sdk::Result<MessageQueryResult>> {
-        let (direction, start, end) = {
-            match &query {
-                MessageQuery::AfterCache => (Direction::Forward, self.end().cloned(), None),
-                MessageQuery::BeforeCache => (Direction::Backward, self.begin().cloned(), None),
-                MessageQuery::Newest => (Direction::Backward, None, self.end().cloned()),
+        let room_id = room.room_id().to_owned();
+
+        let (query, dir, from, to) = {
+            match (query, &self.begin_token, &self.end_token) {
+                (MessageQuery::AfterCache, _, Some(t)) => (
+                    MessageQuery::AfterCache,
+                    Direction::Forward,
+                    t.clone(),
+                    None,
+                ),
+                (MessageQuery::BeforeCache, Some(t), _) => (
+                    MessageQuery::BeforeCache,
+                    Direction::Backward,
+                    t.clone(),
+                    None,
+                ),
+                (_, _, t) => (
+                    MessageQuery::Newest,
+                    Direction::Backward,
+                    client.sync_token().await.unwrap(),
+                    t.clone(),
+                ),
             }
         };
 
         async move {
-            let events = room
-                .messages(start.as_ref(), end.as_ref(), 10, direction)
-                .await?;
+            let mut request = get_message_events::Request::new(&room_id, &from, dir);
+            request.limit = QUERY_BATCH_SIZE_LIMIT.into();
+            request.to = to.as_deref();
+
+            let events = room.messages(request).await?;
 
             Ok(MessageQueryResult { events, query })
         }
     }
 
     pub fn update(&mut self, query_result: MessageQueryResult) {
-        fn transform_events(i: impl Iterator<Item = SyncRoomEvent>) -> impl Iterator<Item = Event> {
+        fn transform_events(i: impl Iterator<Item = RoomEvent>) -> impl Iterator<Item = Event> {
             i.filter_map(|msg| match msg.event.deserialize() {
-                Ok(e) => Some(e),
+                Ok(e) => Some(match e {
+                    AnyRoomEvent::State(m) => Event::State(m.into()),
+                    AnyRoomEvent::Message(m) => Event::Message(m.into()),
+                    AnyRoomEvent::RedactedState(m) => Event::RedactedState(m.into()),
+                    AnyRoomEvent::RedactedMessage(m) => Event::RedactedMessage(m.into()),
+                }),
                 Err(e) => {
                     tracing::warn!("Failed to deserialize message {:?}", e);
                     None
@@ -207,60 +234,50 @@ impl RoomTimelineCache {
             })
         }
 
-        if let Some(msgs) = query_result.events {
-            match query_result.query {
-                MessageQuery::AfterCache => {
-                    let mut iter = transform_events(msgs.into_iter().rev());
-                    if let Some(e) = iter.next() {
-                        if self.end() != Some(e.event_id()) {
-                            self.clear();
-                            self.append(e);
-                        }
-                    }
-                    self.end = CacheEndState::Reached;
-                    for msg in iter {
-                        self.end = CacheEndState::Open;
-                        self.append(msg);
-                    }
+        let batch = query_result.events;
+        let msgs = batch.chunk;
+        let num_events = msgs.len() + batch.state.len();
+        match query_result.query {
+            MessageQuery::AfterCache => {
+                for msg in transform_events(msgs.into_iter()) {
+                    self.append(msg);
                 }
-                MessageQuery::BeforeCache => {
-                    let mut iter = transform_events(msgs.into_iter());
-                    if let Some(e) = iter.next() {
-                        if self.begin() != Some(e.event_id()) {
-                            self.clear();
-                            self.prepend(e);
-                        }
-                    }
-                    self.begin = CacheEndState::Reached;
-                    for msg in iter {
-                        self.begin = CacheEndState::Open;
-                        self.prepend(msg);
-                    }
-                }
-                MessageQuery::Newest => {
-                    let mut iter = transform_events(msgs.into_iter().rev());
-                    if let Some(e) = iter.next() {
-                        if self.end() != Some(e.event_id()) {
-                            self.clear();
-                            self.append(e);
-                        }
-                    }
-                    for msg in iter {
-                        self.append(msg);
-                    }
-                    self.end = CacheEndState::Reached;
-                }
+
+                self.end_token = Some(batch.end.unwrap());
+                self.end = if num_events < QUERY_BATCH_SIZE_LIMIT as usize {
+                    CacheEndState::Reached
+                } else {
+                    CacheEndState::Open
+                };
             }
-        } else {
-            match query_result.query {
-                MessageQuery::AfterCache => {
-                    self.end = CacheEndState::Reached;
+            MessageQuery::BeforeCache => {
+                for msg in transform_events(msgs.into_iter()) {
+                    self.prepend(msg);
                 }
-                MessageQuery::BeforeCache => {
-                    self.begin = CacheEndState::Reached;
+
+                self.begin_token = Some(batch.end.unwrap());
+                self.end = if num_events < QUERY_BATCH_SIZE_LIMIT as usize {
+                    CacheEndState::Reached
+                } else {
+                    CacheEndState::Open
+                };
+            }
+            MessageQuery::Newest => {
+                if num_events >= QUERY_BATCH_SIZE_LIMIT as usize {
+                    // We fetch from the latest sync token backwards, possibly up to the cache end.
+                    // We cannot compare sync tokens, so the only thing we know here, is that we
+                    // DON'T have to invalidate the cache, if we get less than
+                    // QUERY_BATCH_SIZE_LIMIT. In all other cases we just have to assume that the
+                    // cache is invalid now. :(
+                    self.begin_token = Some(batch.end.unwrap());
+                    self.begin = CacheEndState::Open;
+                    self.clear();
                 }
-                MessageQuery::Newest => {
-                    self.end = CacheEndState::Reached;
+                self.end_token = Some(batch.start.unwrap());
+                self.end = CacheEndState::Reached;
+
+                for msg in transform_events(msgs.into_iter().rev()) {
+                    self.append(msg);
                 }
             }
         }
@@ -276,5 +293,5 @@ pub enum MessageQuery {
 
 pub struct MessageQueryResult {
     query: MessageQuery,
-    events: Option<Vec<SyncRoomEvent>>,
+    events: Messages,
 }

@@ -35,7 +35,7 @@ impl Scrollable for MessagesMut<'_> {
             }
         }
         .ok_or(())?;
-        current.selection = MessageSelection::Specific(messages.message(pos).event_id().clone());
+        current.selection = MessageSelection::Specific(messages.message(pos).event_id().to_owned());
         Ok(())
     }
 
@@ -50,9 +50,9 @@ impl Scrollable for MessagesMut<'_> {
         current.selection = match messages.next(pos) {
             EventWalkResult::End => MessageSelection::Newest,
             EventWalkResult::Message(pos) => {
-                MessageSelection::Specific(messages.message(pos).event_id().clone())
+                MessageSelection::Specific(messages.message(pos).event_id().to_owned())
             }
-            EventWalkResult::RequiresFetchFrom(_) => return Err(()),
+            EventWalkResult::RequiresFetch => return Err(()),
         };
         Ok(())
     }
@@ -98,11 +98,11 @@ impl Messages<'_> {
                 EventWalkResult::End => {
                     break;
                 }
-                EventWalkResult::RequiresFetchFrom(_tok) => {
+                EventWalkResult::RequiresFetch => {
                     let mut c = Cursor::new(&mut window);
                     write!(&mut c, message_fetch_symbol!()).unwrap();
                     self.2
-                        .set_message_query(room.clone(), MessageQuery::BeforeCache);
+                        .set_message_query(room.to_owned(), MessageQuery::BeforeCache);
                     break;
                 }
             };
@@ -119,7 +119,8 @@ impl Messages<'_> {
             EventWalkResultNewest::Message(m) => m,
             EventWalkResultNewest::End => return,
             EventWalkResultNewest::RequiresFetch(latest) => {
-                self.2.set_message_query(room.clone(), MessageQuery::Newest);
+                self.2
+                    .set_message_query(room.to_owned(), MessageQuery::Newest);
 
                 let split = (window.get_height() - 1).from_origin();
                 let (above, mut below) = match window.split(split) {
@@ -168,7 +169,7 @@ impl Messages<'_> {
                 EventWalkResult::End => {
                     break;
                 }
-                EventWalkResult::RequiresFetchFrom(_tok) => {
+                EventWalkResult::RequiresFetch => {
                     collected_height += Height::new(1).unwrap();
                     break;
                 }
@@ -216,11 +217,11 @@ impl Messages<'_> {
                 EventWalkResult::End => {
                     break;
                 }
-                EventWalkResult::RequiresFetchFrom(_tok) => {
+                EventWalkResult::RequiresFetch => {
                     let mut c = Cursor::new(&mut window);
                     write!(&mut c, message_fetch_symbol!()).unwrap();
                     self.2
-                        .set_message_query(room.clone(), MessageQuery::AfterCache);
+                        .set_message_query(room.to_owned(), MessageQuery::AfterCache);
                     break;
                 }
             };
@@ -253,7 +254,7 @@ impl Widget for Messages<'_> {
                     MessageSelection::Newest => MessageQuery::Newest,
                     MessageSelection::Specific(_id) => MessageQuery::BeforeCache,
                 };
-                self.2.set_message_query(current.id.clone(), query);
+                self.2.set_message_query(current.id.to_owned(), query);
             }
         }
     }

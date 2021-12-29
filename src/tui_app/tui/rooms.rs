@@ -14,12 +14,13 @@ pub struct Rooms<'a>(pub &'a State, pub &'a TuiState);
 impl<'a> Rooms<'a> {
     fn all_rooms<'r>(
         self,
-    ) -> impl DoubleEndedIterator<Item = (&'a RoomId, &'a crate::tui_app::RoomState)> + 'a {
+    ) -> impl DoubleEndedIterator<Item = (&'a Box<RoomId>, &'a crate::tui_app::RoomState)> + 'a
+    {
         self.0.rooms.iter()
     }
     fn active_rooms(
         self,
-    ) -> impl DoubleEndedIterator<Item = (&'a RoomId, &'a crate::tui_app::RoomState)> {
+    ) -> impl DoubleEndedIterator<Item = (&'a Box<RoomId>, &'a crate::tui_app::RoomState)> {
         let s = self.1.room_filter_line.get();
         let s_lower = s.to_lowercase();
         let mixed = s != s_lower;
@@ -59,7 +60,7 @@ impl<'a> Rooms<'a> {
         for (id, r) in self.active_rooms().into_iter() {
             layout = layout.widget(RoomSummary {
                 state: r,
-                current: self.1.current_room.as_ref() == Some(id),
+                current: self.1.current_room.as_deref() == Some(id),
             });
         }
         layout
@@ -86,7 +87,7 @@ impl Scrollable for RoomsMut<'_> {
             Some(
                 it.next()
                     .or(self.as_rooms().active_rooms().into_iter().rev().next())
-                    .map(|(k, _)| k.clone())
+                    .map(|(k, _)| k.to_owned())
                     .unwrap_or(current),
             )
         } else {
