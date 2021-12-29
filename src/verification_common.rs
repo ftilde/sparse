@@ -96,9 +96,8 @@ pub async fn run_verify_loop(client: &Client) -> Result<(), matrix_sdk::Error> {
                             .get_verification_request(&e.sender, &e.content.transaction_id)
                             .await;
                         if let Some(request) = request {
-                            let sas = request.start_sas().await.unwrap();
+                            let _sas = request.start_sas().await.unwrap();
                             we_started.store(true, Ordering::SeqCst);
-                            println!("sas {:?}", sas);
                         }
                     }
 
