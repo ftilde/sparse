@@ -273,6 +273,7 @@ pub enum Event {
     Update,
     Input(Input),
     Signal(signal::Signal),
+    Bell,
 }
 
 #[derive(Debug)]
@@ -342,6 +343,7 @@ pub async fn run_tui(
             };
             match event.unwrap() {
                 Event::Update => {}
+                Event::Bell => term.emit_bell(),
                 Event::Signal(signal::Signal::SIGWINCH) => { /* Just redraw the window */ }
                 Event::Signal(signal::Signal::SIGTSTP) => {
                     if let Err(e) = term.handle_sigtstp() {

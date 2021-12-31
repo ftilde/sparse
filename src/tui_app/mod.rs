@@ -250,6 +250,7 @@ async fn register_event_handlers<'a>(client: &'a Client, c: Connection) {
             move |notification: Notification, room: Room, _: Client| {
                 let c = c.clone();
                 async move {
+                    let mut bell = None;
                     if notification
                         .actions
                         .iter()
@@ -313,6 +314,7 @@ async fn register_event_handlers<'a>(client: &'a Client, c: Connection) {
                                         if let Err(e) = notification.show() {
                                             tracing::error!("Failed to show notification {}", e);
                                         }
+                                        bell = Some(Event::Bell);
                                     }
                                 }
                             }
@@ -329,7 +331,11 @@ async fn register_event_handlers<'a>(client: &'a Client, c: Connection) {
                         let m = &mut state.rooms.get_mut(room.room_id()).unwrap();
                         m.num_unread_notifications =
                             room.unread_notification_counts().notification_count;
-                        c.update().await;
+                        if let Some(bell) = bell {
+                            c.events.lock().await.send(bell).await.unwrap();
+                        } else {
+                            c.update().await;
+                        }
                     }
                 }
             }
