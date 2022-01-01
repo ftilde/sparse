@@ -81,7 +81,8 @@ impl Messages<'_> {
         loop {
             msg = match msg {
                 EventWalkResult::Message(id) => {
-                    let evt = TuiEvent(state.messages.message(id), window.get_width(), state);
+                    let e = state.messages.message(id);
+                    let evt = TuiEvent(e, window.get_width(), state);
                     let h = evt.space_demand().height.min;
                     let window_height = window.get_height();
                     let (above, below) = match window.split((window_height - h).from_origin()) {
@@ -335,6 +336,23 @@ impl TuiEvent<'_> {
             },
             o => {
                 let _ = write!(c, "Other event {:?}", o);
+            }
+        }
+        if let Some(reactions) = self.2.messages.reactions(self.0.event_id()) {
+            {
+                let mut c = c.save().style_modifier();
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                let _ = write!(c, "\nReactions: ");
+            }
+            for (emoji, e) in reactions {
+                let _ = write!(c, "{}", emoji);
+                let n = e.len();
+                if n > 1 {
+                    let mut c = c.save().style_modifier();
+                    c.set_style_modifier(StyleModifier::new().italic(true));
+                    let _ = write!(c, " {}", n);
+                }
+                let _ = write!(c, "  ");
             }
         }
     }

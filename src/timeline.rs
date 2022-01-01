@@ -2,13 +2,18 @@ use matrix_sdk::ruma::api::client::r0::message::get_message_events::{self, Direc
 use matrix_sdk::{
     deserialized_responses::RoomEvent,
     room::{Messages, Room},
-    ruma::events::{AnyRoomEvent, AnySyncRoomEvent},
+    ruma::events::{
+        reaction::ReactionEventContent, AnyRoomEvent, AnySyncMessageEvent, AnySyncRoomEvent,
+        SyncMessageEvent,
+    },
     ruma::identifiers::EventId,
     Client,
 };
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 pub type Event = AnySyncRoomEvent;
+pub type Reaction = SyncMessageEvent<ReactionEventContent>;
+pub type Reactions = HashMap<String, Vec<Reaction>>;
 
 pub enum CacheEndState {
     Open,
@@ -21,6 +26,7 @@ pub struct RoomTimelineCache {
     end: CacheEndState,
     begin_token: Option<String>,
     end_token: Option<String>,
+    reactions: HashMap<Box<EventId>, Reactions>,
 }
 
 impl std::default::Default for RoomTimelineCache {
@@ -31,6 +37,7 @@ impl std::default::Default for RoomTimelineCache {
             end: CacheEndState::Open,
             begin_token: None,
             end_token: None,
+            reactions: HashMap::new(),
         }
     }
 }
@@ -97,15 +104,38 @@ impl RoomTimelineCache {
         self.messages.back().map(|e| e.event_id())
     }
 
+    pub fn reactions(&self, id: &EventId) -> Option<&Reactions> {
+        self.reactions.get(id)
+    }
+
     fn clear(&mut self) {
         self.messages.clear();
     }
 
+    fn pre_process_message(&mut self, msg: Event) -> Option<Event> {
+        match msg {
+            Event::Message(AnySyncMessageEvent::Reaction(r)) => {
+                self.reactions
+                    .entry(r.content.relates_to.event_id.to_owned())
+                    .or_default()
+                    .entry(r.content.relates_to.emoji.to_owned())
+                    .or_default()
+                    .push(r);
+                None
+            }
+            o => Some(o),
+        }
+    }
+
     fn append(&mut self, msg: Event) {
-        self.messages.push_back(msg)
+        if let Some(msg) = self.pre_process_message(msg) {
+            self.messages.push_back(msg)
+        }
     }
     fn prepend(&mut self, msg: Event) {
-        self.messages.push_front(msg)
+        if let Some(msg) = self.pre_process_message(msg) {
+            self.messages.push_front(msg)
+        }
     }
 
     pub fn notify_new_messages(&mut self) {
