@@ -103,7 +103,8 @@ fn parse_keys(s: &str) -> rlua::Result<Vec<Key>> {
     let mut keys = Vec::new();
     loop {
         let key = match chars {
-            &['<', 'R', 'e', 't', 'u', 'r', 'n', '>', ref rest @ ..] => {
+            &['<', 'R', 'e', 't', 'u', 'r', 'n', '>', ref rest @ ..]
+            | &['<', 'C', '-', 'm' | 'M', '>', ref rest @ ..] => {
                 chars = rest;
                 Key::Char('\n')
             }
@@ -111,11 +112,13 @@ fn parse_keys(s: &str) -> rlua::Result<Vec<Key>> {
                 chars = rest;
                 Key::Char(' ')
             }
-            &['<', 'T', 'a', 'b', '>', ref rest @ ..] => {
+            &['<', 'T', 'a', 'b', '>', ref rest @ ..]
+            | &['<', 'C', '-', 'i' | 'I', '>', ref rest @ ..] => {
                 chars = rest;
                 Key::Char('\t')
             }
-            &['<', 'E', 's', 'c', '>', ref rest @ ..] => {
+            &['<', 'E', 's', 'c', '>', ref rest @ ..]
+            | &['<', 'C', '-', '[', '>', ref rest @ ..] => {
                 chars = rest;
                 Key::Esc
             }
