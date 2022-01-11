@@ -7,7 +7,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Mutex};
 use unsegen::base::*;
-use unsegen::input::{EditBehavior, Editable, Input, Key, OperationResult, ScrollBehavior};
+use unsegen::input::{
+    EditBehavior, Editable, Input, Key, OperationResult, ScrollBehavior, Scrollable,
+};
 use unsegen::widget::builtin::*;
 use unsegen::widget::*;
 
@@ -97,8 +99,8 @@ impl RoomState {
         }
     }
 }
-fn send_read_receipt(c: &Client, rid: Box<RoomId>, eid: Box<EventId>) {
-    if let Some(room) = c.get_joined_room(&rid) {
+fn send_read_receipt(c: &Client, rid: &RoomId, eid: Box<EventId>) {
+    if let Some(room) = c.get_joined_room(rid) {
         tokio::spawn(async move {
             room.read_receipt(&eid).await.unwrap();
         });
@@ -107,8 +109,57 @@ fn send_read_receipt(c: &Client, rid: Box<RoomId>, eid: Box<EventId>) {
     }
 }
 
+#[derive(Default)]
+pub struct RoomSelectionHistory {
+    selections: Vec<Box<RoomId>>, // Ordered from least to most recent access via `select`
+    current: usize,
+}
+
+impl RoomSelectionHistory {
+    fn current(&self) -> Option<&RoomId> {
+        self.selections.get(self.current).map(|c| &**c)
+    }
+
+    fn deselect(&mut self) {
+        self.current = self.selections.len();
+    }
+    fn select(&mut self, id: &RoomId) {
+        let index = self
+            .selections
+            .iter()
+            .enumerate()
+            .find(|(_, c)| *c == id)
+            .map(|(i, _)| i);
+        let new_newest = if let Some(index) = index {
+            self.selections.remove(index)
+        } else {
+            id.to_owned()
+        };
+
+        self.selections.push(new_newest);
+        self.current = self.selections.len() - 1;
+    }
+}
+
+impl Scrollable for RoomSelectionHistory {
+    fn scroll_backwards(&mut self) -> OperationResult {
+        self.current = self.current.checked_sub(1).ok_or(())?;
+        Ok(())
+    }
+
+    fn scroll_forwards(&mut self) -> OperationResult {
+        let new = self.current + 1;
+        if new < self.selections.len() {
+            self.current = new;
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+}
+
 pub struct TuiState {
-    current_room: Option<Box<RoomId>>,
+    room_selection: RoomSelectionHistory,
     rooms: BTreeMap<Box<RoomId>, RoomState>,
     mode: Mode,
     room_filter_line: LineEdit,
@@ -152,10 +203,10 @@ fn key_action_behavior<'a>(
 }
 
 impl TuiState {
-    fn new(current_room: Option<Box<RoomId>>) -> Self {
+    fn new(current_room: Option<&RoomId>) -> Self {
         let mut s = TuiState {
             rooms: BTreeMap::new(),
-            current_room: None,
+            room_selection: RoomSelectionHistory::default(),
             mode: Mode::default(),
             room_filter_line: LineEdit::new(),
             command_line: PromptLine::with_prompt(":".to_owned()),
@@ -186,22 +237,24 @@ impl TuiState {
             Err(())
         }
     }
-    fn set_current_room(&mut self, id: Option<Box<RoomId>>) {
-        if let Some(id) = &id {
+    fn set_current_room(&mut self, id: Option<&RoomId>) {
+        if let Some(id) = id {
             if !self.rooms.contains_key(id) {
                 self.rooms
-                    .insert(id.clone(), RoomState::at_last_message(id.to_owned()));
+                    .insert(id.to_owned(), RoomState::at_last_message(id.to_owned()));
             }
+            self.room_selection.select(id);
+        } else {
+            self.room_selection.deselect();
         }
-        self.current_room = id;
     }
     fn current_room_state(&self) -> Option<&RoomState> {
-        self.current_room
-            .as_ref()
+        self.room_selection
+            .current()
             .map(|r| self.rooms.get(r).unwrap())
     }
     fn current_room_state_mut(&mut self) -> Option<&mut RoomState> {
-        if let Some(id) = self.current_room.as_ref() {
+        if let Some(id) = self.room_selection.current() {
             Some(self.rooms.get_mut(id).unwrap())
         } else {
             None
@@ -300,7 +353,7 @@ pub async fn run_tui(
     let mut term = Terminal::new(stdout.lock()).unwrap();
     let mut tui_state = {
         let state = state.lock().await;
-        TuiState::new(state.rooms.keys().next().cloned())
+        TuiState::new(state.rooms.keys().next().map(|k| &**k))
     };
 
     let mut run = true;
@@ -402,8 +455,8 @@ pub async fn run_tui(
                         }
                     };
 
-                    if let Some(id) = &tui_state.current_room {
-                        if let Some(room) = state.rooms.get_mut(id) {
+                    if let Some(id) = &tui_state.room_selection.current() {
+                        if let Some(room) = state.rooms.get_mut(*id) {
                             if let Some(read_event_id) = room.mark_newest_event_as_read() {
                                 send_read_receipt(&client, id.clone(), read_event_id);
                             }

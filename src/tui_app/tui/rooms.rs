@@ -37,7 +37,7 @@ impl<'a> Rooms<'a> {
         })
     }
     pub fn active_contains_current(&self) -> bool {
-        if let Some(current) = &self.1.current_room {
+        if let Some(current) = &self.1.room_selection.current() {
             self.active_rooms()
                 .into_iter()
                 .find(|(id, _)| **id == *current)
@@ -60,7 +60,7 @@ impl<'a> Rooms<'a> {
         for (id, r) in self.active_rooms().into_iter() {
             layout = layout.widget(RoomSummary {
                 state: r,
-                current: self.1.current_room.as_deref() == Some(id),
+                current: self.1.room_selection.current() == Some(id),
             });
         }
         layout
@@ -76,7 +76,7 @@ impl RoomsMut<'_> {
 }
 impl Scrollable for RoomsMut<'_> {
     fn scroll_backwards(&mut self) -> OperationResult {
-        let new_current_room = if let Some(current) = self.1.current_room.take() {
+        let new_current_room = if let Some(current) = self.1.room_selection.current() {
             let rooms = self.as_rooms();
             let mut it = rooms
                 .active_rooms()
@@ -87,18 +87,19 @@ impl Scrollable for RoomsMut<'_> {
             Some(
                 it.next()
                     .or(self.as_rooms().active_rooms().into_iter().rev().next())
-                    .map(|(k, _)| k.to_owned())
+                    .map(|(k, _)| &**k)
                     .unwrap_or(current),
             )
         } else {
-            self.0.rooms.keys().rev().next().cloned()
-        };
-        self.1.set_current_room(new_current_room);
+            self.0.rooms.keys().rev().next().map(|k| &**k)
+        }
+        .map(|r| r.to_owned());
+        self.1.set_current_room(new_current_room.as_deref());
         Ok(())
     }
 
     fn scroll_forwards(&mut self) -> OperationResult {
-        let new_current_room = if let Some(current) = self.1.current_room.take() {
+        let new_current_room = if let Some(current) = self.1.room_selection.current() {
             let rooms = self.as_rooms();
             let mut it = rooms
                 .active_rooms()
@@ -108,13 +109,14 @@ impl Scrollable for RoomsMut<'_> {
             Some(
                 it.next()
                     .or(self.as_rooms().active_rooms().into_iter().next())
-                    .map(|(k, _)| k.clone())
+                    .map(|(k, _)| &**k)
                     .unwrap_or(current),
             )
         } else {
-            self.0.rooms.keys().next().cloned()
-        };
-        self.1.set_current_room(new_current_room);
+            self.0.rooms.keys().next().map(|k| &**k)
+        }
+        .map(|r| r.to_owned());
+        self.1.set_current_room(new_current_room.as_deref());
         Ok(())
     }
 }

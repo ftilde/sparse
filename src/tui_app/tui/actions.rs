@@ -139,6 +139,12 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             .scroll_backwards()
             .into()
     }),
+    ("select_room_history_next", |c| {
+        c.tui_state.room_selection.scroll_forwards().into()
+    }),
+    ("select_room_history_prev", |c| {
+        c.tui_state.room_selection.scroll_backwards().into()
+    }),
     ("accept_room_selection", |c| {
         let mut r = super::rooms::RoomsMut(&mut c.state, &mut c.tui_state);
         if !r.as_rooms().active_contains_current() {
@@ -149,7 +155,7 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             .into()
     }),
     ("start_reply", |c| {
-        if let Some(id) = &c.tui_state.current_room {
+        if let Some(id) = c.tui_state.room_selection.current() {
             if let Some(room) = c.state.rooms.get(id) {
                 let tui_room = c.tui_state.current_room_state_mut().unwrap();
                 if let super::MessageSelection::Specific(eid) = &tui_room.selection {
