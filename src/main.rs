@@ -1,4 +1,5 @@
 mod devices;
+mod log;
 mod logout;
 mod timeline;
 mod tui_app;
@@ -179,13 +180,7 @@ fn main() {
 }
 
 async fn tokio_main(options: Options) -> Result<(), Box<dyn std::error::Error>> {
-    //TODO: remove dirty dirty dirty hack with leak here
-    let file = &*Box::leak(Box::new(std::fs::File::create("heyo.log").unwrap()));
-    tracing_subscriber::fmt()
-        .with_writer(move || file)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
+    log::init(log::Rotation::Keep(3))?;
     let command = options.command();
     let mut config = ConfigBuilder::new();
 
