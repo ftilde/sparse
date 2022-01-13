@@ -1,4 +1,5 @@
 mod devices;
+mod log;
 mod logout;
 mod timeline;
 mod tui_app;
@@ -16,6 +17,9 @@ use std::path::PathBuf;
 mod config;
 use config::{Config, ConfigBuilder};
 
+const APP_NAME: &str = env!("CARGO_PKG_NAME");
+const LOG_RETENTION_POLICY: log::RetentionPolicy = log::RetentionPolicy::Keep(3);
+
 fn try_load_session(config: &Config) -> Result<Session, Box<dyn std::error::Error>> {
     let session_file = std::fs::File::open(config.session_file_path()?)?; //TODO: encrypt?
     Ok(serde_json::from_reader(session_file)?)
@@ -32,8 +36,6 @@ fn try_store_session(config: &Config, session: &Session) -> Result<(), Box<dyn s
     serde_json::to_writer(session_file, session)?;
     Ok(())
 }
-
-const APP_NAME: &str = env!("CARGO_PKG_NAME");
 
 async fn try_restore_session(
     client: &Client,
@@ -179,13 +181,7 @@ fn main() {
 }
 
 async fn tokio_main(options: Options) -> Result<(), Box<dyn std::error::Error>> {
-    //TODO: remove dirty dirty dirty hack with leak here
-    let file = &*Box::leak(Box::new(std::fs::File::create("heyo.log").unwrap()));
-    tracing_subscriber::fmt()
-        .with_writer(move || file)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
+    let _log_guard = log::init(LOG_RETENTION_POLICY)?;
     let command = options.command();
     let mut config = ConfigBuilder::new();
 
