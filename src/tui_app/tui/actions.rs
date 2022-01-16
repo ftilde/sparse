@@ -330,8 +330,20 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
                     matrix_sdk::ruma::events::reaction::Relation::new(eid.clone(), s),
                 );
                 if let Some(joined_room) = c.client.get_joined_room(&tui_room.id) {
+                    let client = c.client.clone();
+                    let room_id = joined_room.room_id().to_owned();
                     tokio::spawn(async move {
-                        if let Err(e) = joined_room.send(reaction, None).await {
+                        let txn_id = uuid::Uuid::new_v4().to_string();
+                        let request =
+                            matrix_sdk::ruma::api::client::r0::message::send_message_event::Request::new(
+                                &room_id,
+                                &txn_id,
+                                &reaction,
+                            )
+                            .unwrap();
+                        // The change below can be reversed if matrix-sdk issue #470 is fixed.
+                        //if let Err(e) = joined_room.send(reaction, None).await {
+                        if let Err(e) = client.send(request, None).await {
                             tracing::error!("Cannot react to event: {:?}", e);
                         }
                     });

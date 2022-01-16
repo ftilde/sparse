@@ -2777,6 +2777,7 @@ dependencies = [
  "unsegen",
  "unsegen_signals",
  "url",
+ "uuid",
 ]
 
 [[package]]

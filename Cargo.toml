@@ -39,6 +39,8 @@ linkify = "0.7"
 sequence_trie = "0.3.4"
 mime_guess = "2.0"
 
+uuid = "*" #Consider removing once reactions in matrix-sdk are fixed.
+
 [dependencies.matrix-sdk]
 #git = "https://github.com/matrix-org/matrix-rust-sdk"
 #rev = "ee40d917d1f20230de3ad368df7fda17cda66deb"
