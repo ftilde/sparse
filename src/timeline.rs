@@ -286,7 +286,7 @@ impl RoomTimelineCache {
                 }
 
                 self.begin_token = Some(batch.end.unwrap());
-                self.end = if num_events < QUERY_BATCH_SIZE_LIMIT as usize {
+                self.begin = if num_events < QUERY_BATCH_SIZE_LIMIT as usize {
                     CacheEndState::Reached
                 } else {
                     CacheEndState::Open
