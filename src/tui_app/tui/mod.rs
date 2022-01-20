@@ -438,7 +438,7 @@ pub async fn run_tui(
                                         .delete_forwards_on(Key::Delete)
                                         .delete_backwards_on(Key::Backspace)
                                         .left_on(Key::Left)
-                                        .right_on(Key::Left),
+                                        .right_on(Key::Right),
                                 )
                                 .chain(
                                     ScrollBehavior::new(&mut tui_state.command_line)
