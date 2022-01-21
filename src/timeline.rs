@@ -1,10 +1,9 @@
 use matrix_sdk::ruma::api::client::r0::message::get_message_events::{self, Direction};
 use matrix_sdk::{
-    deserialized_responses::RoomEvent,
+    deserialized_responses::SyncRoomEvent,
     room::{Messages, Room},
     ruma::events::{
-        reaction::ReactionEventContent, AnyRoomEvent, AnySyncMessageEvent, AnySyncRoomEvent,
-        SyncMessageEvent,
+        reaction::ReactionEventContent, AnySyncMessageEvent, AnySyncRoomEvent, SyncMessageEvent,
     },
     ruma::identifiers::EventId,
     Client,
@@ -22,8 +21,8 @@ pub enum CacheEndState {
 
 pub struct RoomTimelineCache {
     messages: VecDeque<Event>,
-    begin: CacheEndState,
-    end: CacheEndState,
+    pub begin: CacheEndState,
+    pub end: CacheEndState,
     begin_token: Option<String>,
     end_token: Option<String>,
     reactions: HashMap<Box<EventId>, Reactions>,
@@ -94,12 +93,6 @@ impl RoomTimelineIndex<'_> {
 }
 
 impl RoomTimelineCache {
-    pub fn begin_token(&self) -> Option<&str> {
-        self.begin_token.as_deref()
-    }
-    pub fn end_token(&self) -> Option<&str> {
-        self.end_token.as_deref()
-    }
     pub fn end_id(&self) -> Option<&EventId> {
         self.messages.back().map(|e| e.event_id())
     }
@@ -136,10 +129,6 @@ impl RoomTimelineCache {
         if let Some(msg) = self.pre_process_message(msg) {
             self.messages.push_front(msg)
         }
-    }
-
-    pub fn notify_new_messages(&mut self) {
-        self.end = CacheEndState::Open;
     }
 
     pub fn message(&self, id: RoomTimelineIndex) -> &Event {
@@ -220,7 +209,7 @@ impl RoomTimelineCache {
                     MessageQuery::AfterCache,
                     Direction::Forward,
                     t.clone(),
-                    None,
+                    client.sync_token().await,
                 ),
                 (MessageQuery::BeforeCache, Some(t), _) => (
                     MessageQuery::BeforeCache,
@@ -249,27 +238,12 @@ impl RoomTimelineCache {
     }
 
     pub fn update(&mut self, query_result: MessageQueryResult) {
-        fn transform_events(i: impl Iterator<Item = RoomEvent>) -> impl Iterator<Item = Event> {
-            i.filter_map(|msg| match msg.event.deserialize() {
-                Ok(e) => Some(match e {
-                    AnyRoomEvent::State(m) => Event::State(m.into()),
-                    AnyRoomEvent::Message(m) => Event::Message(m.into()),
-                    AnyRoomEvent::RedactedState(m) => Event::RedactedState(m.into()),
-                    AnyRoomEvent::RedactedMessage(m) => Event::RedactedMessage(m.into()),
-                }),
-                Err(e) => {
-                    tracing::warn!("Failed to deserialize message {:?}", e);
-                    None
-                }
-            })
-        }
-
         let batch = query_result.events;
         let msgs = batch.chunk;
         let num_events = msgs.len() + batch.state.len();
         match query_result.query {
             MessageQuery::AfterCache => {
-                for msg in transform_events(msgs.into_iter()) {
+                for msg in transform_events(msgs.into_iter().map(|e| e.into())) {
                     self.append(msg);
                 }
 
@@ -281,7 +255,7 @@ impl RoomTimelineCache {
                 };
             }
             MessageQuery::BeforeCache => {
-                for msg in transform_events(msgs.into_iter()) {
+                for msg in transform_events(msgs.into_iter().map(|e| e.into())) {
                     self.prepend(msg);
                 }
 
@@ -306,12 +280,49 @@ impl RoomTimelineCache {
                 self.end_token = Some(batch.start.unwrap());
                 self.end = CacheEndState::Reached;
 
-                for msg in transform_events(msgs.into_iter().rev()) {
+                for msg in transform_events(msgs.into_iter().rev().map(|e| e.into())) {
                     self.append(msg);
                 }
             }
         }
     }
+
+    pub fn handle_sync_batch(
+        &mut self,
+        batch: matrix_sdk::deserialized_responses::Timeline,
+        end_token: &str,
+    ) {
+        if matches!(self.end, CacheEndState::Reached) {
+            let events = batch.events.into_iter();
+
+            if batch.limited {
+                self.clear();
+                if let Some(token) = batch.prev_batch {
+                    self.begin_token = Some(token);
+                    self.begin = CacheEndState::Open;
+                } else {
+                    self.begin = CacheEndState::Reached;
+                }
+            }
+
+            self.end_token = Some(end_token.to_owned());
+            self.end = CacheEndState::Reached;
+
+            for msg in transform_events(events.into_iter()) {
+                self.append(msg);
+            }
+        }
+    }
+}
+
+fn transform_events(i: impl Iterator<Item = SyncRoomEvent>) -> impl Iterator<Item = Event> {
+    i.filter_map(|msg| match msg.event.deserialize() {
+        Ok(e) => Some(e),
+        Err(e) => {
+            tracing::warn!("Failed to deserialize message {:?}", e);
+            None
+        }
+    })
 }
 
 #[derive(Debug, Copy, Clone)]

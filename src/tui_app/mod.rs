@@ -12,7 +12,7 @@ use matrix_sdk::{
     Client, LoopCtrl,
 };
 
-use crate::timeline;
+use crate::timeline::{self};
 
 use nix::sys::signal::{SigSet, Signal};
 use std::collections::BTreeMap;
@@ -248,12 +248,7 @@ async fn run_matrix_event_loop(c: Connection) {
 
                 let mut state = c.state.lock().await;
                 let m = &mut state.rooms.get_mut(&room_id).unwrap().messages;
-                if !timeline.events.is_empty() {
-                    m.notify_new_messages();
-                }
-
-                //let events = timeline.events.into_iter().map(|e| e.event);
-                //TODO: put events into timeline and update tokens
+                m.handle_sync_batch(timeline, &response.next_batch);
 
                 use matrix_sdk::ruma::events::AnySyncStateEvent;
                 if let Some(room) = c.client.get_room(&room_id) {
@@ -268,7 +263,7 @@ async fn run_matrix_event_loop(c: Connection) {
                             }
                             Ok(_) => {}
                             Err(e) => {
-                                tracing::warn!("Failed to deserialize state message {}", e)
+                                tracing::warn!("Failed to deserialize state event {}", e)
                             }
                         }
                     }
