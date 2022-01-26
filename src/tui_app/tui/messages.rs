@@ -322,13 +322,49 @@ impl TuiEvent<'_> {
                             c.set_style_modifier(StyleModifier::new().italic(true));
                             let _ = write!(c, " sent a file ({})", f.body);
                         }
+                        MessageType::Emote(e) => {
+                            c.set_style_modifier(StyleModifier::new().italic(true));
+                            let _ = write!(c, " {}", e.body);
+                        }
+                        MessageType::Location(e) => {
+                            c.set_style_modifier(StyleModifier::new().italic(true));
+                            let _ = write!(c, " sends the location {} ({})", e.body, e.geo_uri);
+                        }
+                        MessageType::Notice(n) => {
+                            let _ = write!(c, ": ");
+                            c.set_style_modifier(StyleModifier::new().italic(true));
+                            let start = c.get_col();
+                            c.set_line_start_column(start);
+                            let _ = write!(c, "{}", &n.body);
+                        }
+                        MessageType::ServerNotice(n) => {
+                            let _ = write!(c, ": ");
+                            c.set_style_modifier(StyleModifier::new().italic(true));
+                            let start = c.get_col();
+                            c.set_line_start_column(start);
+                            let _ = write!(c, "{} [server notice]", &n.body);
+                        }
+                        MessageType::VerificationRequest(_r) => {
+                            let _ = write!(c, " sent a verification request.");
+                        }
+                        MessageType::_Custom(e) => {
+                            let _ = write!(c, " sent a custom event: ");
+                            c.set_style_modifier(StyleModifier::new().italic(true));
+                            let start = c.get_col();
+                            c.set_line_start_column(start);
+                            let _ = write!(c, "{:?}", e);
+                        }
                         o => {
                             let _ = write!(c, "Other message {:?}", o);
                         }
                     }
                 }
-                AnySyncMessageEvent::RoomEncrypted(_msg) => {
-                    c.write("*Unable to decrypt message*");
+                AnySyncMessageEvent::RoomEncrypted(msg) => {
+                    c.set_wrapping_mode(WrappingMode::Wrap);
+                    c.set_style_modifier(StyleModifier::new().italic(true));
+                    c.write("*Unable to decrypt message from ");
+                    write_user(c, &msg.sender, self.2);
+                    c.write("*");
                 }
                 o => {
                     let _ = write!(c, "Other event {:?}", o);
