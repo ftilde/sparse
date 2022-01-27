@@ -281,6 +281,21 @@ fn write_user<T: unsegen::base::CursorTarget>(
     let _ = write!(c, "{}", user_id.as_str());
 }
 
+fn write_message_event_info<T: unsegen::base::CursorTarget>(
+    c: &mut Cursor<T>,
+    prefix: &str,
+    user_id: &UserId,
+    suffix: &str,
+    state: &crate::tui_app::RoomState,
+) {
+    let mut c = c.save().style_modifier();
+    c.set_wrapping_mode(WrappingMode::Wrap);
+    c.set_style_modifier(StyleModifier::new().italic(true));
+    c.write(prefix);
+    write_user(&mut c, user_id, state);
+    c.write(suffix);
+}
+
 impl TuiEvent<'_> {
     fn write_time<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
         use chrono::TimeZone;
@@ -359,12 +374,59 @@ impl TuiEvent<'_> {
                         }
                     }
                 }
-                AnySyncMessageEvent::RoomEncrypted(msg) => {
+                AnySyncMessageEvent::RoomEncrypted(msg) => write_message_event_info(
+                    c,
+                    "*Unable to decrypt message from ",
+                    &msg.sender,
+                    "*",
+                    self.2,
+                ),
+                AnySyncMessageEvent::CallAnswer(msg) => {
+                    write_message_event_info(c, "Call answer from ", &msg.sender, ".", self.2)
+                }
+                AnySyncMessageEvent::CallInvite(msg) => {
+                    write_message_event_info(c, "Call invite from ", &msg.sender, ".", self.2)
+                }
+                AnySyncMessageEvent::CallHangup(msg) => {
+                    write_message_event_info(c, "Call hangup from ", &msg.sender, ".", self.2)
+                }
+                AnySyncMessageEvent::CallCandidates(msg) => {
+                    write_message_event_info(c, "Call candidates from ", &msg.sender, ".", self.2)
+                }
+                AnySyncMessageEvent::KeyVerificationStart(msg) => write_message_event_info(
+                    c,
+                    "Ignoring verification start message from ",
+                    &msg.sender,
+                    ".",
+                    self.2,
+                ),
+                AnySyncMessageEvent::KeyVerificationReady(_) // Intentionally ignored
+                | AnySyncMessageEvent::KeyVerificationCancel(_)
+                | AnySyncMessageEvent::KeyVerificationAccept(_)
+                | AnySyncMessageEvent::KeyVerificationKey(_)
+                | AnySyncMessageEvent::KeyVerificationMac(_)
+                | AnySyncMessageEvent::KeyVerificationDone(_) => {}
+                AnySyncMessageEvent::Reaction(_) => {
+                    panic!("Reactions should be filtered from the timeline")
+                }
+                AnySyncMessageEvent::RoomMessageFeedback(_) => {
+                    //Ignored
+                }
+                AnySyncMessageEvent::RoomRedaction(e) => {
+                    let _ = write!(c, "Room Redaction {:?}", e);
+                }
+                AnySyncMessageEvent::Sticker(msg) => {
+                    write_user(c, &msg.sender, self.2);
                     c.set_wrapping_mode(WrappingMode::Wrap);
                     c.set_style_modifier(StyleModifier::new().italic(true));
-                    c.write("*Unable to decrypt message from ");
-                    write_user(c, &msg.sender, self.2);
-                    c.write("*");
+                    let _ = write!(c, " sent a sticker ({})", msg.content.body);
+                }
+                AnySyncMessageEvent::_Custom(_) => {
+                    let _ = write!(c, " sent a message event: ");
+                    c.set_style_modifier(StyleModifier::new().italic(true));
+                    let start = c.get_col();
+                    c.set_line_start_column(start);
+                    let _ = write!(c, "{:?}", e);
                 }
                 o => {
                     let _ = write!(c, "Other event {:?}", o);
