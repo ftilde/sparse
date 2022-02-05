@@ -87,6 +87,7 @@ pub struct RoomState {
     name: String,
     latest_read_message: Option<Box<EventId>>,
     num_unread_notifications: u64,
+    last_notification_handle: Option<notify_rust::NotificationHandle>,
     user_colors: UserColors,
 }
 
@@ -103,12 +104,16 @@ impl RoomState {
             name,
             latest_read_message,
             num_unread_notifications: room.unread_notification_counts().notification_count,
+            last_notification_handle: None,
             user_colors: calculate_user_colors(room).await,
         }
     }
 
     pub fn mark_newest_event_as_read(&mut self) -> Option<Box<EventId>> {
         self.num_unread_notifications = 0;
+        self.last_notification_handle
+            .take()
+            .map(|handle| handle.close());
         let latest = self.messages.end_id();
         if latest.is_some() && self.latest_read_message.as_deref() != latest {
             self.latest_read_message = latest.map(|e| e.to_owned());
@@ -155,6 +160,7 @@ impl State {
 async fn handle_notification(c: &Connection, room: &Room, notification: Notification) {
     let c = c.clone();
     let mut bell = None;
+    let mut notification_handle = None;
     if notification
         .actions
         .iter()
@@ -164,8 +170,8 @@ async fn handle_notification(c: &Connection, room: &Room, notification: Notifica
         match notification.event.deserialize() {
             Ok(e) => {
                 if Some(e.sender()) != c.client.user_id().await.as_deref() {
-                    let sender = e.sender().to_string();
                     let mut notification = notify_rust::Notification::new();
+                    let sender = e.sender().to_string();
                     let group_string = if room.is_direct() {
                         format!("{}", sender)
                     } else {
@@ -203,8 +209,9 @@ async fn handle_notification(c: &Connection, room: &Room, notification: Notifica
                         }
                     }
                     if !matches!(c.config.notification_style, NotificationStyle::Disabled) {
-                        if let Err(e) = notification.show() {
-                            tracing::error!("Failed to show notification {}", e);
+                        match notification.show() {
+                            Ok(handle) => notification_handle = Some(handle),
+                            Err(e) => tracing::error!("Failed to show notification {}", e),
                         }
                         bell = Some(Event::Bell);
                     }
@@ -219,6 +226,11 @@ async fn handle_notification(c: &Connection, room: &Room, notification: Notifica
         let mut state = c.state.lock().await;
         let m = &mut state.rooms.get_mut(room.room_id()).unwrap();
         m.num_unread_notifications = room.unread_notification_counts().notification_count;
+        if let Some(handle) = notification_handle {
+            m.last_notification_handle
+                .replace(handle)
+                .map(|old_handle| old_handle.close());
+        }
         if let Some(bell) = bell {
             c.events.lock().await.send(bell).await.unwrap();
         } else {
