@@ -10,7 +10,7 @@ use crate::tui_app::tui::{MessageSelection, Tasks, TuiState};
 
 use matrix_sdk::{
     self,
-    ruma::events::{room::message::MessageType, AnySyncMessageEvent},
+    ruma::events::{room::message::MessageType, AnySyncMessageEvent, AnySyncStateEvent},
     ruma::identifiers::{EventId, RoomId},
     ruma::UserId,
 };
@@ -281,7 +281,7 @@ fn write_user<T: unsegen::base::CursorTarget>(
     let _ = write!(c, "{}", user_id.as_str());
 }
 
-fn write_message_event_info<T: unsegen::base::CursorTarget>(
+fn write_event_info<T: unsegen::base::CursorTarget>(
     c: &mut Cursor<T>,
     prefix: &str,
     user_id: &UserId,
@@ -374,7 +374,7 @@ impl TuiEvent<'_> {
                         }
                     }
                 }
-                AnySyncMessageEvent::RoomEncrypted(msg) => write_message_event_info(
+                AnySyncMessageEvent::RoomEncrypted(msg) => write_event_info(
                     c,
                     "*Unable to decrypt message from ",
                     &msg.sender,
@@ -382,18 +382,18 @@ impl TuiEvent<'_> {
                     self.2,
                 ),
                 AnySyncMessageEvent::CallAnswer(msg) => {
-                    write_message_event_info(c, "Call answer from ", &msg.sender, ".", self.2)
+                    write_event_info(c, "Call answer from ", &msg.sender, ".", self.2)
                 }
                 AnySyncMessageEvent::CallInvite(msg) => {
-                    write_message_event_info(c, "Call invite from ", &msg.sender, ".", self.2)
+                    write_event_info(c, "Call invite from ", &msg.sender, ".", self.2)
                 }
                 AnySyncMessageEvent::CallHangup(msg) => {
-                    write_message_event_info(c, "Call hangup from ", &msg.sender, ".", self.2)
+                    write_event_info(c, "Call hangup from ", &msg.sender, ".", self.2)
                 }
                 AnySyncMessageEvent::CallCandidates(msg) => {
-                    write_message_event_info(c, "Call candidates from ", &msg.sender, ".", self.2)
+                    write_event_info(c, "Call candidates from ", &msg.sender, ".", self.2)
                 }
-                AnySyncMessageEvent::KeyVerificationStart(msg) => write_message_event_info(
+                AnySyncMessageEvent::KeyVerificationStart(msg) => write_event_info(
                     c,
                     "Ignoring verification start message from ",
                     &msg.sender,
@@ -429,9 +429,124 @@ impl TuiEvent<'_> {
                     let _ = write!(c, "{:?}", e);
                 }
                 o => {
-                    let _ = write!(c, "Other event {:?}", o);
+                    let _ = write!(c, "Other message event {:?}", o);
                 }
             },
+            crate::timeline::Event::State(e) => {
+                c.set_wrapping_mode(WrappingMode::Wrap);
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                match e {
+                    //Not sure what to do with these...
+                    //AnySyncStateEvent::PolicyRuleRoom(_) => todo!(),
+                    //AnySyncStateEvent::PolicyRuleServer(_) => todo!(),
+                    //AnySyncStateEvent::PolicyRuleUser(_) => todo!(),
+                    //AnySyncStateEvent::RoomTombstone(_) => todo!(),
+                    //AnySyncStateEvent::RoomPowerLevels(_) => todo!(),
+                    //AnySyncStateEvent::RoomServerAcl(_) => todo!(),
+                    //AnySyncStateEvent::SpaceChild(_) => todo!(),
+                    //AnySyncStateEvent::SpaceParent(_) => todo!(),
+                    //AnySyncStateEvent::_Custom(_) => todo!(),
+                    AnySyncStateEvent::RoomCanonicalAlias(e) => {
+                        write_user(c, &e.sender, self.2);
+                        if let Some(a) = &e.content.alias {
+                            let _ =
+                                write!(c, " changed the canonical room alias to {}.", a.as_str());
+                        } else {
+                            let _ = write!(c, " has removed the room alias.",);
+                        }
+                    }
+                    AnySyncStateEvent::RoomCreate(e) => {
+                        write_event_info(c, "", &e.sender, " created the room.", self.2)
+                    }
+                    AnySyncStateEvent::RoomAliases(_) | AnySyncStateEvent::RoomAvatar(_) => {}
+                    AnySyncStateEvent::RoomEncryption(e) => {
+                        write_user(c, &e.sender, self.2);
+                        let _ = write!(c, " enabled encryption.");
+                    }
+                    AnySyncStateEvent::RoomGuestAccess(e) => {
+                        write_user(c, &e.sender, self.2);
+                        let _ = write!(
+                            c,
+                            " changed the guest access to {}.",
+                            e.content.guest_access.as_str()
+                        );
+                    }
+                    AnySyncStateEvent::RoomHistoryVisibility(e) => {
+                        write_user(c, &e.sender, self.2);
+                        let _ = write!(
+                            c,
+                            " changed the history visibility to {}.",
+                            e.content.history_visibility.as_str()
+                        );
+                    }
+                    AnySyncStateEvent::RoomJoinRules(e) => {
+                        write_user(c, &e.sender, self.2);
+                        let _ = write!(
+                            c,
+                            " changed the join rules to {}.",
+                            e.content.join_rule.as_str()
+                        );
+                    }
+                    AnySyncStateEvent::RoomMember(e) => {
+                        use matrix_sdk::ruma::events::room::member::MembershipChange::*;
+                        let s = match e.membership_change() {
+                            None => Option::None,
+                            Error => panic!("Membership change is 'Error'"),
+                            Joined => Some(" joined."),
+                            Left => Some(" left."),
+                            Banned => Some(" was banned."),
+                            Unbanned => Some(" was unbanned."),
+                            Kicked => Some(" was kicked."),
+                            Invited => Some(" was invited."),
+                            KickedAndBanned => Some(" was kicked and banned."),
+                            InvitationRejected => Some(" rejected the invitation."),
+                            ProfileChanged {
+                                displayname_changed: true,
+                                avatar_url_changed: _,
+                            } => Some(" changed their displayname."),
+                            NotImplemented => Option::None,
+                            InvitationRevoked => Some("'s invitation was revoked."),
+                            _o => Some(" had another state change"),
+                        };
+                        if let Some(s) = s {
+                            if let Some(u) = &e.content.displayname {
+                                let _ = write!(c, "{}", u);
+                            } else {
+                                let _ = write!(c, "Unknown user");
+                            }
+                            let _ = write!(c, "{}", s);
+                        }
+                    }
+                    AnySyncStateEvent::RoomName(e) => {
+                        write_user(c, &e.sender, self.2);
+                        if let Some(a) = &e.content.name {
+                            let _ = write!(c, " changed the room name to '{}'.", a.as_str());
+                        } else {
+                            let _ = write!(c, " has unset the room name.",);
+                        }
+                    }
+                    AnySyncStateEvent::RoomPinnedEvents(e) => {
+                        write_user(c, &e.sender, self.2);
+                        let _ = write!(
+                            c,
+                            " has pinned the following events {:?}.",
+                            e.content.pinned
+                        );
+                        //TODO: We will have to see how to display this properly
+                    }
+                    AnySyncStateEvent::RoomThirdPartyInvite(e) => {
+                        write_user(c, &e.sender, self.2);
+                        let _ = write!(c, " has invited {}.", e.content.display_name);
+                    }
+                    AnySyncStateEvent::RoomTopic(e) => {
+                        write_user(c, &e.sender, self.2);
+                        let _ = write!(c, " has changed the topic to '{}'.", e.content.topic);
+                    }
+                    o => {
+                        let _ = write!(c, "Other state event {:?}", o);
+                    }
+                }
+            }
             o => {
                 let _ = write!(c, "Other event {:?}", o);
             }
