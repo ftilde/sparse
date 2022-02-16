@@ -269,7 +269,7 @@ fn msg_edit<'a>(room_state: &'a RoomState, potentially_active: bool) -> impl Wid
             MessageType::Text(t) => t.body.clone(),
             o => format!("{:?}", o),
         };
-        layout = layout.widget(format!("-> {}: {:?}", orig.sender, c));
+        layout = layout.widget(format!("┏➤ {}: {:?}", orig.sender, c));
     }
     layout.widget(
         HLayout::new().widget("> ").widget(

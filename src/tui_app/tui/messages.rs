@@ -10,7 +10,10 @@ use crate::tui_app::tui::{MessageSelection, Tasks, TuiState};
 
 use matrix_sdk::{
     self,
-    ruma::events::{room::message::MessageType, AnySyncMessageEvent, AnySyncStateEvent},
+    ruma::events::{
+        room::message::{MessageType, Relation},
+        AnySyncMessageEvent, AnySyncStateEvent,
+    },
     ruma::identifiers::{EventId, RoomId},
     ruma::UserId,
 };
@@ -261,11 +264,65 @@ impl Widget for Messages<'_> {
     }
 }
 
+struct StyledLine {
+    content: Vec<StyledGraphemeCluster>,
+    style: Style,
+}
+
+impl StyledLine {
+    fn new(w: Width, style: Style) -> Self {
+        StyledLine {
+            content: vec![
+                StyledGraphemeCluster::new(GraphemeCluster::space(), Style::plain());
+                w.raw_value() as _
+            ],
+            style,
+        }
+    }
+}
+impl CursorTarget for StyledLine {
+    fn get_width(&self) -> Width {
+        Width::new(self.content.len() as i32).unwrap()
+    }
+    fn get_height(&self) -> Height {
+        Height::new(1).unwrap()
+    }
+    fn get_cell_mut(&mut self, x: ColIndex, y: RowIndex) -> Option<&mut StyledGraphemeCluster> {
+        if x < 0 || y != 0 {
+            return None;
+        }
+        self.content.get_mut(x.raw_value() as usize)
+    }
+    fn get_cell(&self, x: ColIndex, y: RowIndex) -> Option<&StyledGraphemeCluster> {
+        if x < 0 || y != 0 {
+            return None;
+        }
+        self.content.get(x.raw_value() as usize)
+    }
+    fn get_default_style(&self) -> Style {
+        self.style
+    }
+}
+
 struct TuiEvent<'a>(
     &'a crate::timeline::Event,
     Width,
     &'a crate::tui_app::RoomState,
 );
+
+fn write_body<T: unsegen::base::CursorTarget>(c: &mut Cursor<T>, mut body: &str) {
+    while let [b'>', b' ', ..] = body.as_bytes() {
+        if let Some(e) = body.find('\n') {
+            body = &body[e + 1..];
+        } else {
+            return;
+        }
+    }
+    if let [b'\n', ..] = body.as_bytes() {
+        body = &body[1..];
+    }
+    c.write(body);
+}
 
 fn write_user<T: unsegen::base::CursorTarget>(
     c: &mut Cursor<T>,
@@ -281,21 +338,6 @@ fn write_user<T: unsegen::base::CursorTarget>(
     let _ = write!(c, "{}", user_id.as_str());
 }
 
-fn write_event_info<T: unsegen::base::CursorTarget>(
-    c: &mut Cursor<T>,
-    prefix: &str,
-    user_id: &UserId,
-    suffix: &str,
-    state: &crate::tui_app::RoomState,
-) {
-    let mut c = c.save().style_modifier();
-    c.set_wrapping_mode(WrappingMode::Wrap);
-    c.set_style_modifier(StyleModifier::new().italic(true));
-    c.write(prefix);
-    write_user(&mut c, user_id, state);
-    c.write(suffix);
-}
-
 impl TuiEvent<'_> {
     fn write_time<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
         use chrono::TimeZone;
@@ -306,20 +348,38 @@ impl TuiEvent<'_> {
         let time_str = send_time.format("%m-%d %H:%M");
         let _ = write!(c, "{} ", time_str);
     }
-
-    fn draw_with_cursor<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
-        self.write_time(c);
+    fn draw_content<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>, simplified: bool) {
+        let mut c = c.save().style_modifier();
         match self.0 {
             crate::timeline::Event::Message(e) => match e {
                 AnySyncMessageEvent::RoomMessage(msg) => {
-                    write_user(c, &msg.sender, self.2);
+                    if !simplified {
+                        if let Some(Relation::Reply { in_reply_to: rel }) = &msg.content.relates_to {
+                            if let Some(rel) = self.2.messages.message_from_id(&rel.event_id) {
+                                let start = c.get_col();
+                                c.set_line_start_column(start);
+                                c.write("┏➤ ");
+                                let w = (self.1 - c.get_position().0.diff_to_origin()).positive_or_zero();
+                                let mut l = StyledLine::new(w, c.target().get_default_style());
+                                let mut lc = Cursor::new(&mut l);
+                                TuiEvent(rel, self.1, self.2).draw_content(&mut lc, true);
+                                if lc.get_row() != 0 || lc.get_col() >= w.from_origin() {
+                                    lc = lc.position((w-3).from_origin(), AxisIndex::new(0));
+                                    lc.write("...");
+                                }
+                                c.write_preformatted(l.content.as_slice());
+                                c.wrap_line();
+                            }
+                        }
+                    }
+                    write_user(&mut c, &msg.sender, self.2);
                     c.set_wrapping_mode(WrappingMode::Wrap);
                     match &msg.content.msgtype {
                         MessageType::Text(text) => {
                             let _ = write!(c, ": ");
                             let start = c.get_col();
                             c.set_line_start_column(start);
-                            let _ = write!(c, "{}", &text.body);
+                            write_body(&mut c, &text.body);
                         }
                         MessageType::Image(img) => {
                             c.set_style_modifier(StyleModifier::new().italic(true));
@@ -374,32 +434,48 @@ impl TuiEvent<'_> {
                         }
                     }
                 }
-                AnySyncMessageEvent::RoomEncrypted(msg) => write_event_info(
-                    c,
-                    "*Unable to decrypt message from ",
-                    &msg.sender,
-                    "*",
-                    self.2,
-                ),
+                AnySyncMessageEvent::RoomEncrypted(msg) => {
+                    c.set_wrapping_mode(WrappingMode::Wrap);
+                    c.set_style_modifier(StyleModifier::new().italic(true));
+                    c.write("*Unable to decrypt message from ");
+                    write_user(&mut c, &msg.sender, self.2);
+                    c.write("*");
+                }
                 AnySyncMessageEvent::CallAnswer(msg) => {
-                    write_event_info(c, "Call answer from ", &msg.sender, ".", self.2)
+                    c.set_wrapping_mode(WrappingMode::Wrap);
+                    c.set_style_modifier(StyleModifier::new().italic(true));
+                    c.write("Call answer from ");
+                    write_user(&mut c, &msg.sender, self.2);
+                    c.write(".");
                 }
                 AnySyncMessageEvent::CallInvite(msg) => {
-                    write_event_info(c, "Call invite from ", &msg.sender, ".", self.2)
+                    c.set_wrapping_mode(WrappingMode::Wrap);
+                    c.set_style_modifier(StyleModifier::new().italic(true));
+                    c.write("Call invite from ");
+                    write_user(&mut c, &msg.sender, self.2);
+                    c.write(".");
                 }
                 AnySyncMessageEvent::CallHangup(msg) => {
-                    write_event_info(c, "Call hangup from ", &msg.sender, ".", self.2)
+                    c.set_wrapping_mode(WrappingMode::Wrap);
+                    c.set_style_modifier(StyleModifier::new().italic(true));
+                    c.write("Call hangup from ");
+                    write_user(&mut c, &msg.sender, self.2);
+                    c.write(".");
                 }
                 AnySyncMessageEvent::CallCandidates(msg) => {
-                    write_event_info(c, "Call candidates from ", &msg.sender, ".", self.2)
+                    c.set_wrapping_mode(WrappingMode::Wrap);
+                    c.set_style_modifier(StyleModifier::new().italic(true));
+                    c.write("Call candidates from ");
+                    write_user(&mut c, &msg.sender, self.2);
+                    c.write(".");
                 }
-                AnySyncMessageEvent::KeyVerificationStart(msg) => write_event_info(
-                    c,
-                    "Ignoring verification start message from ",
-                    &msg.sender,
-                    ".",
-                    self.2,
-                ),
+                AnySyncMessageEvent::KeyVerificationStart(msg) => {
+                    c.set_wrapping_mode(WrappingMode::Wrap);
+                    c.set_style_modifier(StyleModifier::new().italic(true));
+                    c.write("Ignoring verification start message from ");
+                    write_user(&mut c, &msg.sender, self.2);
+                    c.write(".");
+                }
                 AnySyncMessageEvent::KeyVerificationReady(_) // Intentionally ignored
                 | AnySyncMessageEvent::KeyVerificationCancel(_)
                 | AnySyncMessageEvent::KeyVerificationAccept(_)
@@ -416,8 +492,7 @@ impl TuiEvent<'_> {
                     let _ = write!(c, "Room Redaction {:?}", e);
                 }
                 AnySyncMessageEvent::Sticker(msg) => {
-                    write_user(c, &msg.sender, self.2);
-                    c.set_wrapping_mode(WrappingMode::Wrap);
+                    write_user(&mut c, &msg.sender, self.2);
                     c.set_style_modifier(StyleModifier::new().italic(true));
                     let _ = write!(c, " sent a sticker ({})", msg.content.body);
                 }
@@ -447,7 +522,7 @@ impl TuiEvent<'_> {
                     //AnySyncStateEvent::SpaceParent(_) => todo!(),
                     //AnySyncStateEvent::_Custom(_) => todo!(),
                     AnySyncStateEvent::RoomCanonicalAlias(e) => {
-                        write_user(c, &e.sender, self.2);
+                        write_user(&mut c, &e.sender, self.2);
                         if let Some(a) = &e.content.alias {
                             let _ =
                                 write!(c, " changed the canonical room alias to {}.", a.as_str());
@@ -456,15 +531,16 @@ impl TuiEvent<'_> {
                         }
                     }
                     AnySyncStateEvent::RoomCreate(e) => {
-                        write_event_info(c, "", &e.sender, " created the room.", self.2)
+                        write_user(&mut c, &e.sender, self.2);
+                        let _ = write!(c, " created the room.");
                     }
                     AnySyncStateEvent::RoomAliases(_) | AnySyncStateEvent::RoomAvatar(_) => {}
                     AnySyncStateEvent::RoomEncryption(e) => {
-                        write_user(c, &e.sender, self.2);
+                        write_user(&mut c, &e.sender, self.2);
                         let _ = write!(c, " enabled encryption.");
                     }
                     AnySyncStateEvent::RoomGuestAccess(e) => {
-                        write_user(c, &e.sender, self.2);
+                        write_user(&mut c, &e.sender, self.2);
                         let _ = write!(
                             c,
                             " changed the guest access to {}.",
@@ -472,7 +548,7 @@ impl TuiEvent<'_> {
                         );
                     }
                     AnySyncStateEvent::RoomHistoryVisibility(e) => {
-                        write_user(c, &e.sender, self.2);
+                        write_user(&mut c, &e.sender, self.2);
                         let _ = write!(
                             c,
                             " changed the history visibility to {}.",
@@ -480,7 +556,7 @@ impl TuiEvent<'_> {
                         );
                     }
                     AnySyncStateEvent::RoomJoinRules(e) => {
-                        write_user(c, &e.sender, self.2);
+                        write_user(&mut c, &e.sender, self.2);
                         let _ = write!(
                             c,
                             " changed the join rules to {}.",
@@ -518,7 +594,7 @@ impl TuiEvent<'_> {
                         }
                     }
                     AnySyncStateEvent::RoomName(e) => {
-                        write_user(c, &e.sender, self.2);
+                        write_user(&mut c, &e.sender, self.2);
                         if let Some(a) = &e.content.name {
                             let _ = write!(c, " changed the room name to '{}'.", a.as_str());
                         } else {
@@ -526,7 +602,7 @@ impl TuiEvent<'_> {
                         }
                     }
                     AnySyncStateEvent::RoomPinnedEvents(e) => {
-                        write_user(c, &e.sender, self.2);
+                        write_user(&mut c, &e.sender, self.2);
                         let _ = write!(
                             c,
                             " has pinned the following events {:?}.",
@@ -535,11 +611,11 @@ impl TuiEvent<'_> {
                         //TODO: We will have to see how to display this properly
                     }
                     AnySyncStateEvent::RoomThirdPartyInvite(e) => {
-                        write_user(c, &e.sender, self.2);
+                        write_user(&mut c, &e.sender, self.2);
                         let _ = write!(c, " has invited {}.", e.content.display_name);
                     }
                     AnySyncStateEvent::RoomTopic(e) => {
-                        write_user(c, &e.sender, self.2);
+                        write_user(&mut c, &e.sender, self.2);
                         let _ = write!(c, " has changed the topic to '{}'.", e.content.topic);
                     }
                     o => {
@@ -551,6 +627,11 @@ impl TuiEvent<'_> {
                 let _ = write!(c, "Other event {:?}", o);
             }
         }
+    }
+
+    fn draw_with_cursor<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
+        self.write_time(c);
+        self.draw_content(c, false);
         if let Some(reactions) = self.2.messages.reactions(self.0.event_id()) {
             {
                 let mut c = c.save().style_modifier();
