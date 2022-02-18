@@ -159,13 +159,19 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             if let Some(room) = c.state.rooms.get(id) {
                 let tui_room = c.tui_state.current_room_state_mut().unwrap();
                 if let super::MessageSelection::Specific(eid) = &tui_room.selection {
-                    if let Some(crate::timeline::Event::Message(
-                        AnySyncMessageEvent::RoomMessage(msg),
-                    )) = room.messages.message_from_id(&eid)
-                    {
-                        tui_room.msg_edit_type = super::SendMessageType::Reply(msg.clone());
-                        tui_room.selection = super::MessageSelection::Newest;
-                        ActionResult::Ok
+                    if let Some(m) = room.messages.message_from_id(&eid) {
+                        if let crate::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(
+                            msg,
+                        )) = m
+                        {
+                            tui_room.msg_edit_type = super::SendMessageType::Reply(msg.clone());
+                            tui_room.selection = super::MessageSelection::Newest;
+                            ActionResult::Ok
+                        } else {
+                            ActionResult::Error(format!(
+                                "Only simple message events can be replied to",
+                            ))
+                        }
                     } else {
                         ActionResult::Error(format!("Cannot find message with id {:?}", eid))
                     }

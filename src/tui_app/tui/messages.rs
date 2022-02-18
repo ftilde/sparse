@@ -1,3 +1,5 @@
+use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+use matrix_sdk::ruma::events::SyncMessageEvent;
 use std::fmt::Write;
 use unsegen::base::*;
 use unsegen::input::{OperationResult, Scrollable};
@@ -338,142 +340,163 @@ fn write_user<T: unsegen::base::CursorTarget>(
     let _ = write!(c, "{}", user_id.as_str());
 }
 
-impl TuiEvent<'_> {
-    fn write_time<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
-        use chrono::TimeZone;
-        let send_time_secs_unix = self.0.origin_server_ts().as_secs();
-        let send_time_naive =
-            chrono::naive::NaiveDateTime::from_timestamp(send_time_secs_unix.into(), 0);
-        let send_time = chrono::Local.from_utc_datetime(&send_time_naive);
-        let time_str = send_time.format("%m-%d %H:%M");
-        let _ = write!(c, "{} ", time_str);
+pub fn draw_event_preview<T: unsegen::base::CursorTarget, D: DrawEvent>(
+    event: &D,
+    room_state: &crate::tui_app::RoomState,
+    target: &mut T,
+) {
+    let w = target.get_width();
+    let mut c = Cursor::<T>::new(target);
+    c.write("┏➤ ");
+    event.draw(room_state, &mut c, true);
+    if c.get_row() != 0 || c.get_col() >= w.from_origin() {
+        c = c.position((w - 3).from_origin(), AxisIndex::new(0));
+        c.write("...");
     }
-    fn draw_content<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>, simplified: bool) {
-        let mut c = c.save().style_modifier();
-        match self.0 {
-            crate::timeline::Event::Message(e) => match e {
+}
+
+pub trait DrawEvent {
+    fn draw<T: unsegen::base::CursorTarget>(
+        &self,
+        room_state: &crate::tui_app::RoomState,
+        c: &mut Cursor<T>,
+        simplified: bool,
+    );
+}
+
+impl DrawEvent for SyncMessageEvent<RoomMessageEventContent> {
+    fn draw<T: unsegen::base::CursorTarget>(
+        &self,
+        room_state: &crate::tui_app::RoomState,
+        c: &mut Cursor<T>,
+        simplified: bool,
+    ) {
+        if !simplified {
+            if let Some(Relation::Reply { in_reply_to: rel }) = &self.content.relates_to {
+                if let Some(rel) = room_state.messages.message_from_id(&rel.event_id) {
+                    let mut l =
+                        StyledLine::new(c.target().get_width(), c.target().get_default_style());
+                    draw_event_preview(rel, room_state, &mut l);
+                    c.write_preformatted(l.content.as_slice());
+                    c.wrap_line();
+                }
+            }
+        }
+        write_user(c, &self.sender, room_state);
+        c.set_wrapping_mode(WrappingMode::Wrap);
+        match &self.content.msgtype {
+            MessageType::Text(text) => {
+                let _ = write!(c, ": ");
+                let start = c.get_col();
+                c.set_line_start_column(start);
+                write_body(c, &text.body);
+            }
+            MessageType::Image(img) => {
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                let _ = write!(c, " sent an image ({})", img.body);
+            }
+            MessageType::Video(v) => {
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                let _ = write!(c, " sent a video ({})", v.body);
+            }
+            MessageType::Audio(a) => {
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                let _ = write!(c, " sent an audio message ({})", a.body);
+            }
+            MessageType::File(f) => {
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                let _ = write!(c, " sent a file ({})", f.body);
+            }
+            MessageType::Emote(e) => {
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                let _ = write!(c, " {}", e.body);
+            }
+            MessageType::Location(e) => {
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                let _ = write!(c, " sends the location {} ({})", e.body, e.geo_uri);
+            }
+            MessageType::Notice(n) => {
+                let _ = write!(c, ": ");
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                let start = c.get_col();
+                c.set_line_start_column(start);
+                let _ = write!(c, "{}", &n.body);
+            }
+            MessageType::ServerNotice(n) => {
+                let _ = write!(c, ": ");
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                let start = c.get_col();
+                c.set_line_start_column(start);
+                let _ = write!(c, "{} [server notice]", &n.body);
+            }
+            MessageType::VerificationRequest(_r) => {
+                let _ = write!(c, " sent a verification request.");
+            }
+            MessageType::_Custom(e) => {
+                let _ = write!(c, " sent a custom event: ");
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                let start = c.get_col();
+                c.set_line_start_column(start);
+                let _ = write!(c, "{:?}", e);
+            }
+            o => {
+                let _ = write!(c, "Other message {:?}", o);
+            }
+        }
+    }
+}
+
+impl DrawEvent for AnySyncMessageEvent {
+    fn draw<T: unsegen::base::CursorTarget>(
+        &self,
+        room_state: &crate::tui_app::RoomState,
+        c: &mut Cursor<T>,
+        simplified: bool,
+    ) {
+        match self {
                 AnySyncMessageEvent::RoomMessage(msg) => {
-                    if !simplified {
-                        if let Some(Relation::Reply { in_reply_to: rel }) = &msg.content.relates_to {
-                            if let Some(rel) = self.2.messages.message_from_id(&rel.event_id) {
-                                let start = c.get_col();
-                                c.set_line_start_column(start);
-                                c.write("┏➤ ");
-                                let w = (self.1 - c.get_position().0.diff_to_origin()).positive_or_zero();
-                                let mut l = StyledLine::new(w, c.target().get_default_style());
-                                let mut lc = Cursor::new(&mut l);
-                                TuiEvent(rel, self.1, self.2).draw_content(&mut lc, true);
-                                if lc.get_row() != 0 || lc.get_col() >= w.from_origin() {
-                                    lc = lc.position((w-3).from_origin(), AxisIndex::new(0));
-                                    lc.write("...");
-                                }
-                                c.write_preformatted(l.content.as_slice());
-                                c.wrap_line();
-                            }
-                        }
-                    }
-                    write_user(&mut c, &msg.sender, self.2);
-                    c.set_wrapping_mode(WrappingMode::Wrap);
-                    match &msg.content.msgtype {
-                        MessageType::Text(text) => {
-                            let _ = write!(c, ": ");
-                            let start = c.get_col();
-                            c.set_line_start_column(start);
-                            write_body(&mut c, &text.body);
-                        }
-                        MessageType::Image(img) => {
-                            c.set_style_modifier(StyleModifier::new().italic(true));
-                            let _ = write!(c, " sent an image ({})", img.body);
-                        }
-                        MessageType::Video(v) => {
-                            c.set_style_modifier(StyleModifier::new().italic(true));
-                            let _ = write!(c, " sent a video ({})", v.body);
-                        }
-                        MessageType::Audio(a) => {
-                            c.set_style_modifier(StyleModifier::new().italic(true));
-                            let _ = write!(c, " sent an audio message ({})", a.body);
-                        }
-                        MessageType::File(f) => {
-                            c.set_style_modifier(StyleModifier::new().italic(true));
-                            let _ = write!(c, " sent a file ({})", f.body);
-                        }
-                        MessageType::Emote(e) => {
-                            c.set_style_modifier(StyleModifier::new().italic(true));
-                            let _ = write!(c, " {}", e.body);
-                        }
-                        MessageType::Location(e) => {
-                            c.set_style_modifier(StyleModifier::new().italic(true));
-                            let _ = write!(c, " sends the location {} ({})", e.body, e.geo_uri);
-                        }
-                        MessageType::Notice(n) => {
-                            let _ = write!(c, ": ");
-                            c.set_style_modifier(StyleModifier::new().italic(true));
-                            let start = c.get_col();
-                            c.set_line_start_column(start);
-                            let _ = write!(c, "{}", &n.body);
-                        }
-                        MessageType::ServerNotice(n) => {
-                            let _ = write!(c, ": ");
-                            c.set_style_modifier(StyleModifier::new().italic(true));
-                            let start = c.get_col();
-                            c.set_line_start_column(start);
-                            let _ = write!(c, "{} [server notice]", &n.body);
-                        }
-                        MessageType::VerificationRequest(_r) => {
-                            let _ = write!(c, " sent a verification request.");
-                        }
-                        MessageType::_Custom(e) => {
-                            let _ = write!(c, " sent a custom event: ");
-                            c.set_style_modifier(StyleModifier::new().italic(true));
-                            let start = c.get_col();
-                            c.set_line_start_column(start);
-                            let _ = write!(c, "{:?}", e);
-                        }
-                        o => {
-                            let _ = write!(c, "Other message {:?}", o);
-                        }
-                    }
+                    msg.draw(room_state, c, simplified)
                 }
                 AnySyncMessageEvent::RoomEncrypted(msg) => {
                     c.set_wrapping_mode(WrappingMode::Wrap);
                     c.set_style_modifier(StyleModifier::new().italic(true));
                     c.write("*Unable to decrypt message from ");
-                    write_user(&mut c, &msg.sender, self.2);
+                    write_user(c, &msg.sender, room_state);
                     c.write("*");
                 }
                 AnySyncMessageEvent::CallAnswer(msg) => {
                     c.set_wrapping_mode(WrappingMode::Wrap);
                     c.set_style_modifier(StyleModifier::new().italic(true));
                     c.write("Call answer from ");
-                    write_user(&mut c, &msg.sender, self.2);
+                    write_user(c, &msg.sender, room_state);
                     c.write(".");
                 }
                 AnySyncMessageEvent::CallInvite(msg) => {
                     c.set_wrapping_mode(WrappingMode::Wrap);
                     c.set_style_modifier(StyleModifier::new().italic(true));
                     c.write("Call invite from ");
-                    write_user(&mut c, &msg.sender, self.2);
+                    write_user(c, &msg.sender, room_state);
                     c.write(".");
                 }
                 AnySyncMessageEvent::CallHangup(msg) => {
                     c.set_wrapping_mode(WrappingMode::Wrap);
                     c.set_style_modifier(StyleModifier::new().italic(true));
                     c.write("Call hangup from ");
-                    write_user(&mut c, &msg.sender, self.2);
+                    write_user(c, &msg.sender, room_state);
                     c.write(".");
                 }
                 AnySyncMessageEvent::CallCandidates(msg) => {
                     c.set_wrapping_mode(WrappingMode::Wrap);
                     c.set_style_modifier(StyleModifier::new().italic(true));
                     c.write("Call candidates from ");
-                    write_user(&mut c, &msg.sender, self.2);
+                    write_user(c, &msg.sender, room_state);
                     c.write(".");
                 }
                 AnySyncMessageEvent::KeyVerificationStart(msg) => {
                     c.set_wrapping_mode(WrappingMode::Wrap);
                     c.set_style_modifier(StyleModifier::new().italic(true));
                     c.write("Ignoring verification start message from ");
-                    write_user(&mut c, &msg.sender, self.2);
+                    write_user(c, &msg.sender, room_state);
                     c.write(".");
                 }
                 AnySyncMessageEvent::KeyVerificationReady(_) // Intentionally ignored
@@ -492,11 +515,11 @@ impl TuiEvent<'_> {
                     let _ = write!(c, "Room Redaction {:?}", e);
                 }
                 AnySyncMessageEvent::Sticker(msg) => {
-                    write_user(&mut c, &msg.sender, self.2);
+                    write_user(c, &msg.sender, room_state);
                     c.set_style_modifier(StyleModifier::new().italic(true));
                     let _ = write!(c, " sent a sticker ({})", msg.content.body);
                 }
-                AnySyncMessageEvent::_Custom(_) => {
+                AnySyncMessageEvent::_Custom(e) => {
                     let _ = write!(c, " sent a message event: ");
                     c.set_style_modifier(StyleModifier::new().italic(true));
                     let start = c.get_col();
@@ -506,132 +529,170 @@ impl TuiEvent<'_> {
                 o => {
                     let _ = write!(c, "Other message event {:?}", o);
                 }
-            },
-            crate::timeline::Event::State(e) => {
-                c.set_wrapping_mode(WrappingMode::Wrap);
-                c.set_style_modifier(StyleModifier::new().italic(true));
-                match e {
-                    //Not sure what to do with these...
-                    //AnySyncStateEvent::PolicyRuleRoom(_) => todo!(),
-                    //AnySyncStateEvent::PolicyRuleServer(_) => todo!(),
-                    //AnySyncStateEvent::PolicyRuleUser(_) => todo!(),
-                    //AnySyncStateEvent::RoomTombstone(_) => todo!(),
-                    //AnySyncStateEvent::RoomPowerLevels(_) => todo!(),
-                    //AnySyncStateEvent::RoomServerAcl(_) => todo!(),
-                    //AnySyncStateEvent::SpaceChild(_) => todo!(),
-                    //AnySyncStateEvent::SpaceParent(_) => todo!(),
-                    //AnySyncStateEvent::_Custom(_) => todo!(),
-                    AnySyncStateEvent::RoomCanonicalAlias(e) => {
-                        write_user(&mut c, &e.sender, self.2);
-                        if let Some(a) = &e.content.alias {
-                            let _ =
-                                write!(c, " changed the canonical room alias to {}.", a.as_str());
-                        } else {
-                            let _ = write!(c, " has removed the room alias.",);
-                        }
-                    }
-                    AnySyncStateEvent::RoomCreate(e) => {
-                        write_user(&mut c, &e.sender, self.2);
-                        let _ = write!(c, " created the room.");
-                    }
-                    AnySyncStateEvent::RoomAliases(_) | AnySyncStateEvent::RoomAvatar(_) => {}
-                    AnySyncStateEvent::RoomEncryption(e) => {
-                        write_user(&mut c, &e.sender, self.2);
-                        let _ = write!(c, " enabled encryption.");
-                    }
-                    AnySyncStateEvent::RoomGuestAccess(e) => {
-                        write_user(&mut c, &e.sender, self.2);
-                        let _ = write!(
-                            c,
-                            " changed the guest access to {}.",
-                            e.content.guest_access.as_str()
-                        );
-                    }
-                    AnySyncStateEvent::RoomHistoryVisibility(e) => {
-                        write_user(&mut c, &e.sender, self.2);
-                        let _ = write!(
-                            c,
-                            " changed the history visibility to {}.",
-                            e.content.history_visibility.as_str()
-                        );
-                    }
-                    AnySyncStateEvent::RoomJoinRules(e) => {
-                        write_user(&mut c, &e.sender, self.2);
-                        let _ = write!(
-                            c,
-                            " changed the join rules to {}.",
-                            e.content.join_rule.as_str()
-                        );
-                    }
-                    AnySyncStateEvent::RoomMember(e) => {
-                        use matrix_sdk::ruma::events::room::member::MembershipChange::*;
-                        let s = match e.membership_change() {
-                            None => Option::None,
-                            Error => panic!("Membership change is 'Error'"),
-                            Joined => Some(" joined."),
-                            Left => Some(" left."),
-                            Banned => Some(" was banned."),
-                            Unbanned => Some(" was unbanned."),
-                            Kicked => Some(" was kicked."),
-                            Invited => Some(" was invited."),
-                            KickedAndBanned => Some(" was kicked and banned."),
-                            InvitationRejected => Some(" rejected the invitation."),
-                            ProfileChanged {
-                                displayname_changed: true,
-                                avatar_url_changed: _,
-                            } => Some(" changed their displayname."),
-                            NotImplemented => Option::None,
-                            InvitationRevoked => Some("'s invitation was revoked."),
-                            _o => Some(" had another state change"),
-                        };
-                        if let Some(s) = s {
-                            if let Some(u) = &e.content.displayname {
-                                let _ = write!(c, "{}", u);
-                            } else {
-                                let _ = write!(c, "Unknown user");
-                            }
-                            let _ = write!(c, "{}", s);
-                        }
-                    }
-                    AnySyncStateEvent::RoomName(e) => {
-                        write_user(&mut c, &e.sender, self.2);
-                        if let Some(a) = &e.content.name {
-                            let _ = write!(c, " changed the room name to '{}'.", a.as_str());
-                        } else {
-                            let _ = write!(c, " has unset the room name.",);
-                        }
-                    }
-                    AnySyncStateEvent::RoomPinnedEvents(e) => {
-                        write_user(&mut c, &e.sender, self.2);
-                        let _ = write!(
-                            c,
-                            " has pinned the following events {:?}.",
-                            e.content.pinned
-                        );
-                        //TODO: We will have to see how to display this properly
-                    }
-                    AnySyncStateEvent::RoomThirdPartyInvite(e) => {
-                        write_user(&mut c, &e.sender, self.2);
-                        let _ = write!(c, " has invited {}.", e.content.display_name);
-                    }
-                    AnySyncStateEvent::RoomTopic(e) => {
-                        write_user(&mut c, &e.sender, self.2);
-                        let _ = write!(c, " has changed the topic to '{}'.", e.content.topic);
-                    }
-                    o => {
-                        let _ = write!(c, "Other state event {:?}", o);
-                    }
+            }
+    }
+}
+
+impl DrawEvent for AnySyncStateEvent {
+    fn draw<T: unsegen::base::CursorTarget>(
+        &self,
+        room_state: &crate::tui_app::RoomState,
+        c: &mut Cursor<T>,
+        _simplified: bool,
+    ) {
+        c.set_wrapping_mode(WrappingMode::Wrap);
+        c.set_style_modifier(StyleModifier::new().italic(true));
+        match self {
+            //Not sure what to do with these...
+            //AnySyncStateEvent::PolicyRuleRoom(_) => todo!(),
+            //AnySyncStateEvent::PolicyRuleServer(_) => todo!(),
+            //AnySyncStateEvent::PolicyRuleUser(_) => todo!(),
+            //AnySyncStateEvent::RoomTombstone(_) => todo!(),
+            //AnySyncStateEvent::RoomPowerLevels(_) => todo!(),
+            //AnySyncStateEvent::RoomServerAcl(_) => todo!(),
+            //AnySyncStateEvent::SpaceChild(_) => todo!(),
+            //AnySyncStateEvent::SpaceParent(_) => todo!(),
+            //AnySyncStateEvent::_Custom(_) => todo!(),
+            AnySyncStateEvent::RoomCanonicalAlias(e) => {
+                write_user(c, &e.sender, room_state);
+                if let Some(a) = &e.content.alias {
+                    let _ = write!(c, " changed the canonical room alias to {}.", a.as_str());
+                } else {
+                    let _ = write!(c, " has removed the room alias.",);
                 }
             }
+            AnySyncStateEvent::RoomCreate(e) => {
+                write_user(c, &e.sender, room_state);
+                let _ = write!(c, " created the room.");
+            }
+            AnySyncStateEvent::RoomAliases(_) | AnySyncStateEvent::RoomAvatar(_) => {}
+            AnySyncStateEvent::RoomEncryption(e) => {
+                write_user(c, &e.sender, room_state);
+                let _ = write!(c, " enabled encryption.");
+            }
+            AnySyncStateEvent::RoomGuestAccess(e) => {
+                write_user(c, &e.sender, room_state);
+                let _ = write!(
+                    c,
+                    " changed the guest access to {}.",
+                    e.content.guest_access.as_str()
+                );
+            }
+            AnySyncStateEvent::RoomHistoryVisibility(e) => {
+                write_user(c, &e.sender, room_state);
+                let _ = write!(
+                    c,
+                    " changed the history visibility to {}.",
+                    e.content.history_visibility.as_str()
+                );
+            }
+            AnySyncStateEvent::RoomJoinRules(e) => {
+                write_user(c, &e.sender, room_state);
+                let _ = write!(
+                    c,
+                    " changed the join rules to {}.",
+                    e.content.join_rule.as_str()
+                );
+            }
+            AnySyncStateEvent::RoomMember(e) => {
+                use matrix_sdk::ruma::events::room::member::MembershipChange::*;
+                let s = match e.membership_change() {
+                    None => Option::None,
+                    Error => panic!("Membership change is 'Error'"),
+                    Joined => Some(" joined."),
+                    Left => Some(" left."),
+                    Banned => Some(" was banned."),
+                    Unbanned => Some(" was unbanned."),
+                    Kicked => Some(" was kicked."),
+                    Invited => Some(" was invited."),
+                    KickedAndBanned => Some(" was kicked and banned."),
+                    InvitationRejected => Some(" rejected the invitation."),
+                    ProfileChanged {
+                        displayname_changed: true,
+                        avatar_url_changed: _,
+                    } => Some(" changed their displayname."),
+                    NotImplemented => Option::None,
+                    InvitationRevoked => Some("'s invitation was revoked."),
+                    _o => Some(" had another state change"),
+                };
+                if let Some(s) = s {
+                    if let Some(u) = &e.content.displayname {
+                        let _ = write!(c, "{}", u);
+                    } else {
+                        let _ = write!(c, "Unknown user");
+                    }
+                    let _ = write!(c, "{}", s);
+                }
+            }
+            AnySyncStateEvent::RoomName(e) => {
+                write_user(c, &e.sender, room_state);
+                if let Some(a) = &e.content.name {
+                    let _ = write!(c, " changed the room name to '{}'.", a.as_str());
+                } else {
+                    let _ = write!(c, " has unset the room name.",);
+                }
+            }
+            AnySyncStateEvent::RoomPinnedEvents(e) => {
+                write_user(c, &e.sender, room_state);
+                let _ = write!(
+                    c,
+                    " has pinned the following events {:?}.",
+                    e.content.pinned
+                );
+                //TODO: We will have to see how to display this properly
+            }
+            AnySyncStateEvent::RoomThirdPartyInvite(e) => {
+                write_user(c, &e.sender, room_state);
+                let _ = write!(c, " has invited {}.", e.content.display_name);
+            }
+            AnySyncStateEvent::RoomTopic(e) => {
+                write_user(c, &e.sender, room_state);
+                let _ = write!(c, " has changed the topic to '{}'.", e.content.topic);
+            }
+            o => {
+                let _ = write!(c, "Other state event {:?}", o);
+            }
+        }
+    }
+}
+
+impl DrawEvent for crate::tui_app::timeline::Event {
+    fn draw<T: unsegen::base::CursorTarget>(
+        &self,
+        room_state: &crate::tui_app::RoomState,
+        c: &mut Cursor<T>,
+        simplified: bool,
+    ) {
+        let mut c = c.save().style_modifier();
+        match self {
+            crate::timeline::Event::Message(e) => e.draw(room_state, &mut c, simplified),
+            crate::timeline::Event::State(e) => e.draw(room_state, &mut c, simplified),
             o => {
                 let _ = write!(c, "Other event {:?}", o);
             }
         }
     }
+}
+
+impl TuiEvent<'_> {
+    fn write_time<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
+        use chrono::TimeZone;
+        let send_time_secs_unix = self.0.origin_server_ts().as_secs();
+        let send_time_naive =
+            chrono::naive::NaiveDateTime::from_timestamp(send_time_secs_unix.into(), 0);
+        let send_time = chrono::Local.from_utc_datetime(&send_time_naive);
+        let time_str = send_time.format("%m-%d %H:%M");
+        let _ = write!(c, "{} ", time_str);
+    }
 
     fn draw_with_cursor<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
         self.write_time(c);
-        self.draw_content(c, false);
+
+        let start = c.get_col();
+        c.set_line_start_column(start);
+
+        self.0.draw(self.2, c, false);
+
         if let Some(reactions) = self.2.messages.reactions(self.0.event_id()) {
             {
                 let mut c = c.save().style_modifier();

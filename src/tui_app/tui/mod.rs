@@ -14,10 +14,7 @@ use unsegen::widget::builtin::*;
 use unsegen::widget::*;
 
 use matrix_sdk::ruma::{
-    events::{
-        room::message::{MessageType, RoomMessageEventContent},
-        SyncMessageEvent,
-    },
+    events::{room::message::RoomMessageEventContent, SyncMessageEvent},
     identifiers::{EventId, RoomId},
 };
 
@@ -74,13 +71,11 @@ impl RoomState {
             let mut tmp_type = SendMessageType::Simple;
             std::mem::swap(&mut tmp_type, &mut self.msg_edit_type);
             if let Some(room) = c.get_joined_room(&self.id) {
-                let id = self.id.clone();
                 tokio::spawn(async move {
                     let content = match tmp_type {
                         SendMessageType::Simple => RoomMessageEventContent::text_plain(msg),
                         SendMessageType::Reply(orig_msg) => {
-                            let m = orig_msg.into_full_event(id);
-                            RoomMessageEventContent::text_reply_plain(msg, &m)
+                            RoomMessageEventContent::text_reply_plain(msg, &orig_msg)
                         }
                     };
                     room.send(
@@ -262,18 +257,37 @@ impl TuiState {
     }
 }
 
-fn msg_edit<'a>(room_state: &'a RoomState, potentially_active: bool) -> impl Widget + 'a {
+struct Foo<F: Fn(Window, RenderingHints)>(ColDemand, RowDemand, F);
+
+impl<F: Fn(Window, RenderingHints)> Widget for Foo<F> {
+    fn space_demand(&self) -> unsegen::widget::Demand2D {
+        unsegen::widget::Demand2D {
+            width: self.0,
+            height: self.1,
+        }
+    }
+
+    fn draw(&self, window: Window, hints: RenderingHints) {
+        (self.2)(window, hints)
+    }
+}
+
+fn msg_edit<'a>(
+    tui_room_state: &'a RoomState,
+    room_state: &'a crate::tui_app::RoomState,
+    potentially_active: bool,
+) -> impl Widget + 'a {
     let mut layout = VLayout::new();
-    if let SendMessageType::Reply(orig) = &room_state.msg_edit_type {
-        let c = match &orig.content.msgtype {
-            MessageType::Text(t) => t.body.clone(),
-            o => format!("{:?}", o),
-        };
-        layout = layout.widget(format!("┏➤ {}: {:?}", orig.sender, c));
+    if let SendMessageType::Reply(orig) = &tui_room_state.msg_edit_type {
+        layout = layout.widget(Foo(
+            ColDemand::at_least(1),
+            RowDemand::exact(1),
+            move |mut w, _| messages::draw_event_preview(orig, room_state, &mut w),
+        ));
     }
     layout.widget(
         HLayout::new().widget("> ").widget(
-            room_state
+            tui_room_state
                 .msg_edit
                 .as_widget()
                 .cursor_blink_on(StyleModifier::new().underline(true))
@@ -307,16 +321,19 @@ fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl 
     let mut hlayout = HLayout::new()
         .separator(GraphemeCluster::try_from('│').unwrap())
         .widget_weighted(rooms::Rooms(state, tui_state).as_widget(), 0.25);
-    if let Some(current) = tui_state.current_room_state() {
-        hlayout = hlayout.widget_weighted(
-            VLayout::new()
-                .widget(messages::Messages(state, tui_state, tasks))
-                .widget(msg_edit(
-                    current,
-                    matches!(tui_state.mode.builtin_mode(), BuiltinMode::Insert),
-                )),
-            0.75,
-        )
+    if let Some(tui_room) = tui_state.current_room_state() {
+        if let Some(room) = state.rooms.get(&tui_room.id) {
+            hlayout = hlayout.widget_weighted(
+                VLayout::new()
+                    .widget(messages::Messages(state, tui_state, tasks))
+                    .widget(msg_edit(
+                        tui_room,
+                        room,
+                        matches!(tui_state.mode.builtin_mode(), BuiltinMode::Insert),
+                    )),
+                0.75,
+            )
+        }
     }
     VLayout::new().widget(hlayout).widget(bottom_bar(tui_state))
 }
