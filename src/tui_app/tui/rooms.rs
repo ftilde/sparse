@@ -5,11 +5,11 @@ use unsegen::widget::*;
 
 use matrix_sdk::ruma::identifiers::RoomId;
 
-use crate::tui_app::tui::{BuiltinMode, TuiState};
+use crate::tui_app::tui::BuiltinMode;
 use crate::tui_app::State;
 
 #[derive(Copy, Clone)]
-pub struct Rooms<'a>(pub &'a State, pub &'a TuiState);
+pub struct Rooms<'a>(pub &'a State);
 
 impl<'a> Rooms<'a> {
     fn all_rooms<'r>(
@@ -21,11 +21,14 @@ impl<'a> Rooms<'a> {
     fn active_rooms(
         self,
     ) -> impl DoubleEndedIterator<Item = (&'a Box<RoomId>, &'a crate::tui_app::RoomState)> {
-        let s = self.1.room_filter_line.get();
+        let s = self.0.tui.room_filter_line.get();
         let s_lower = s.to_lowercase();
         let mixed = s != s_lower;
         let rooms = self.all_rooms();
-        let only_with_unread = matches!(self.1.mode.builtin_mode(), BuiltinMode::RoomFilterUnread);
+        let only_with_unread = matches!(
+            self.0.tui.mode.builtin_mode(),
+            BuiltinMode::RoomFilterUnread
+        );
         rooms.filter(move |(_i, r)| {
             let passes_filter_string = if mixed {
                 r.name().contains(s)
@@ -37,7 +40,7 @@ impl<'a> Rooms<'a> {
         })
     }
     pub fn active_contains_current(&self) -> bool {
-        if let Some(current) = &self.1.room_selection.current() {
+        if let Some(current) = &self.0.tui.room_selection.current() {
             self.active_rooms()
                 .into_iter()
                 .find(|(id, _)| **id == *current)
@@ -49,34 +52,35 @@ impl<'a> Rooms<'a> {
     pub fn as_widget(self) -> impl Widget + 'a {
         let mut layout = VLayout::new();
 
-        if let BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread = self.1.mode.builtin_mode()
+        if let BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread =
+            self.0.tui.mode.builtin_mode()
         {
             layout = layout.widget(
                 HLayout::new()
                     .widget("# ")
-                    .widget(self.1.room_filter_line.as_widget()),
+                    .widget(self.0.tui.room_filter_line.as_widget()),
             );
         };
         for (id, r) in self.active_rooms().into_iter() {
             layout = layout.widget(RoomSummary {
                 state: r,
-                current: self.1.room_selection.current() == Some(id),
+                current: self.0.tui.room_selection.current() == Some(id),
             });
         }
         layout
     }
 }
 
-pub struct RoomsMut<'a>(pub &'a mut State, pub &'a mut TuiState);
+pub struct RoomsMut<'a>(pub &'a mut State);
 
 impl RoomsMut<'_> {
     pub fn as_rooms<'b>(&'b self) -> Rooms<'b> {
-        Rooms(self.0, self.1)
+        Rooms(self.0)
     }
 }
 impl Scrollable for RoomsMut<'_> {
     fn scroll_backwards(&mut self) -> OperationResult {
-        let new_current_room = if let Some(current) = self.1.room_selection.current() {
+        let new_current_room = if let Some(current) = self.0.tui.room_selection.current() {
             let rooms = self.as_rooms();
             let mut it = rooms
                 .active_rooms()
@@ -94,12 +98,12 @@ impl Scrollable for RoomsMut<'_> {
             self.0.rooms.keys().rev().next().map(|k| &**k)
         }
         .map(|r| r.to_owned());
-        self.1.set_current_room(new_current_room.as_deref());
+        self.0.tui.set_current_room(new_current_room.as_deref());
         Ok(())
     }
 
     fn scroll_forwards(&mut self) -> OperationResult {
-        let new_current_room = if let Some(current) = self.1.room_selection.current() {
+        let new_current_room = if let Some(current) = self.0.tui.room_selection.current() {
             let rooms = self.as_rooms();
             let mut it = rooms
                 .active_rooms()
@@ -116,7 +120,7 @@ impl Scrollable for RoomsMut<'_> {
             self.0.rooms.keys().next().map(|k| &**k)
         }
         .map(|r| r.to_owned());
-        self.1.set_current_room(new_current_room.as_deref());
+        self.0.tui.set_current_room(new_current_room.as_deref());
         Ok(())
     }
 }

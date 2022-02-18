@@ -1,6 +1,5 @@
 use matrix_sdk::Client;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::stdout;
 use std::str::FromStr;
@@ -48,49 +47,18 @@ pub enum MessageSelection {
     Specific(Box<EventId>),
 }
 
-struct RoomState {
-    id: Box<RoomId>,
+pub struct RoomTuiState {
     pub msg_edit: TextEdit,
     msg_edit_type: SendMessageType,
     selection: MessageSelection,
 }
 
-impl RoomState {
-    fn at_last_message(id: Box<RoomId>) -> Self {
-        RoomState {
-            id,
+impl RoomTuiState {
+    pub fn at_last_message() -> Self {
+        RoomTuiState {
             msg_edit: TextEdit::new(),
             msg_edit_type: SendMessageType::Simple,
             selection: MessageSelection::Newest,
-        }
-    }
-    pub fn send_current_message(&mut self, c: &Client) -> OperationResult {
-        let msg = self.msg_edit.get().to_owned();
-        if !msg.is_empty() {
-            self.msg_edit.clear().unwrap();
-            let mut tmp_type = SendMessageType::Simple;
-            std::mem::swap(&mut tmp_type, &mut self.msg_edit_type);
-            if let Some(room) = c.get_joined_room(&self.id) {
-                tokio::spawn(async move {
-                    let content = match tmp_type {
-                        SendMessageType::Simple => RoomMessageEventContent::text_plain(msg),
-                        SendMessageType::Reply(orig_msg) => {
-                            RoomMessageEventContent::text_reply_plain(msg, &orig_msg)
-                        }
-                    };
-                    room.send(
-                        matrix_sdk::ruma::events::AnyMessageEventContent::RoomMessage(content),
-                        None,
-                    )
-                    .await
-                    .unwrap();
-                });
-            } else {
-                tracing::error!("can't send message, no joined room");
-            }
-            Ok(())
-        } else {
-            Err(())
         }
     }
 }
@@ -111,7 +79,7 @@ pub struct RoomSelectionHistory {
 }
 
 impl RoomSelectionHistory {
-    fn current(&self) -> Option<&RoomId> {
+    pub fn current(&self) -> Option<&RoomId> {
         self.selections.get(self.current).map(|c| &**c)
     }
 
@@ -154,8 +122,7 @@ impl Scrollable for RoomSelectionHistory {
 }
 
 pub struct TuiState {
-    room_selection: RoomSelectionHistory,
-    rooms: BTreeMap<Box<RoomId>, RoomState>,
+    pub room_selection: RoomSelectionHistory,
     mode: Mode,
     room_filter_line: LineEdit,
     command_line: PromptLine,
@@ -169,14 +136,14 @@ fn key_action_behavior<'a>(
     move |input: Input| -> Option<Input> {
         let mut new_keys = Keys(Vec::new());
         if let unsegen::input::Event::Key(k) = input.event {
-            c.tui_state.previous_keys.0.push(k);
+            c.state.tui.previous_keys.0.push(k);
         } else {
             return Some(input);
         }
-        std::mem::swap(&mut new_keys, &mut c.tui_state.previous_keys);
-        match c.config.keymaps.find_action(&c.tui_state.mode, &new_keys) {
+        std::mem::swap(&mut new_keys, &mut c.state.tui.previous_keys);
+        match c.config.keymaps.find_action(&c.state.tui.mode, &new_keys) {
             KeyMapFunctionResult::IsPrefix(_) => {
-                c.tui_state.previous_keys = new_keys;
+                c.state.tui.previous_keys = new_keys;
                 None
             }
             KeyMapFunctionResult::Found(action) => {
@@ -184,10 +151,10 @@ fn key_action_behavior<'a>(
                 match c.command_environment.run_action(action, c) {
                     Ok(ActionResult::Ok | ActionResult::Noop) => {}
                     Ok(ActionResult::Error(e)) => {
-                        c.tui_state.last_error_message = Some(e);
+                        c.state.tui.last_error_message = Some(e);
                     }
                     Err(e) => {
-                        c.tui_state.last_error_message = Some(format!("{}", e));
+                        c.state.tui.last_error_message = Some(format!("{}", e));
                     }
                 }
                 None
@@ -198,9 +165,8 @@ fn key_action_behavior<'a>(
 }
 
 impl TuiState {
-    fn new(current_room: Option<&RoomId>) -> Self {
+    pub fn new(current_room: Option<&RoomId>) -> Self {
         let mut s = TuiState {
-            rooms: BTreeMap::new(),
             room_selection: RoomSelectionHistory::default(),
             mode: Mode::default(),
             room_filter_line: LineEdit::new(),
@@ -234,25 +200,9 @@ impl TuiState {
     }
     fn set_current_room(&mut self, id: Option<&RoomId>) {
         if let Some(id) = id {
-            if !self.rooms.contains_key(id) {
-                self.rooms
-                    .insert(id.to_owned(), RoomState::at_last_message(id.to_owned()));
-            }
             self.room_selection.select(id);
         } else {
             self.room_selection.deselect();
-        }
-    }
-    fn current_room_state(&self) -> Option<&RoomState> {
-        self.room_selection
-            .current()
-            .map(|r| self.rooms.get(r).unwrap())
-    }
-    fn current_room_state_mut(&mut self) -> Option<&mut RoomState> {
-        if let Some(id) = self.room_selection.current() {
-            Some(self.rooms.get_mut(id).unwrap())
-        } else {
-            None
         }
     }
 }
@@ -273,12 +223,11 @@ impl<F: Fn(Window, RenderingHints)> Widget for Foo<F> {
 }
 
 fn msg_edit<'a>(
-    tui_room_state: &'a RoomState,
     room_state: &'a crate::tui_app::RoomState,
     potentially_active: bool,
 ) -> impl Widget + 'a {
     let mut layout = VLayout::new();
-    if let SendMessageType::Reply(orig) = &tui_room_state.msg_edit_type {
+    if let SendMessageType::Reply(orig) = &room_state.tui.msg_edit_type {
         layout = layout.widget(Foo(
             ColDemand::at_least(1),
             RowDemand::exact(1),
@@ -287,7 +236,8 @@ fn msg_edit<'a>(
     }
     layout.widget(
         HLayout::new().widget("> ").widget(
-            tui_room_state
+            room_state
+                .tui
                 .msg_edit
                 .as_widget()
                 .cursor_blink_on(StyleModifier::new().underline(true))
@@ -317,25 +267,24 @@ fn bottom_bar<'a>(tui_state: &'a TuiState) -> impl Widget + 'a {
     hlayout
 }
 
-fn tui<'a>(state: &'a State, tui_state: &'a TuiState, tasks: Tasks<'a>) -> impl Widget + 'a {
+fn tui<'a>(state: &'a State, tasks: Tasks<'a>) -> impl Widget + 'a {
     let mut hlayout = HLayout::new()
         .separator(GraphemeCluster::try_from('│').unwrap())
-        .widget_weighted(rooms::Rooms(state, tui_state).as_widget(), 0.25);
-    if let Some(tui_room) = tui_state.current_room_state() {
-        if let Some(room) = state.rooms.get(&tui_room.id) {
-            hlayout = hlayout.widget_weighted(
-                VLayout::new()
-                    .widget(messages::Messages(state, tui_state, tasks))
-                    .widget(msg_edit(
-                        tui_room,
-                        room,
-                        matches!(tui_state.mode.builtin_mode(), BuiltinMode::Insert),
-                    )),
-                0.75,
-            )
-        }
+        .widget_weighted(rooms::Rooms(state).as_widget(), 0.25);
+    if let Some(room) = state.current_room_state() {
+        hlayout = hlayout.widget_weighted(
+            VLayout::new()
+                .widget(messages::Messages(state, tasks))
+                .widget(msg_edit(
+                    room,
+                    matches!(state.tui.mode.builtin_mode(), BuiltinMode::Insert),
+                )),
+            0.75,
+        )
     }
-    VLayout::new().widget(hlayout).widget(bottom_bar(tui_state))
+    VLayout::new()
+        .widget(hlayout)
+        .widget(bottom_bar(&state.tui))
 }
 
 #[derive(Debug)]
@@ -368,10 +317,6 @@ pub async fn run_tui(
 ) {
     let stdout = stdout();
     let mut term = Terminal::new(stdout.lock()).unwrap();
-    let mut tui_state = {
-        let state = state.lock().await;
-        TuiState::new(state.rooms.keys().next().map(|k| &**k))
-    };
 
     let mut run = true;
 
@@ -384,7 +329,7 @@ pub async fn run_tui(
         {
             let state = state.lock().await;
             let win = term.create_root_window();
-            tui(&state, &tui_state, tasks).draw(win, RenderingHints::new().active(true));
+            tui(&state, tasks).draw(win, RenderingHints::new().active(true));
         }
         term.present();
 
@@ -432,7 +377,6 @@ pub async fn run_tui(
                     let mut state = state.lock().await;
 
                     let mut c = actions::CommandContext {
-                        tui_state: &mut tui_state,
                         state: &mut state,
                         client: &client,
                         tasks,
@@ -441,42 +385,40 @@ pub async fn run_tui(
                         command_environment: &command_environment,
                     };
                     let input = input.chain(key_action_behavior(&mut c));
-                    match tui_state.mode.builtin_mode() {
+                    match state.tui.mode.builtin_mode() {
                         BuiltinMode::Normal => {}
                         BuiltinMode::Insert => {
-                            if let Some(room) = tui_state.current_room_state_mut() {
-                                input.chain(EditBehavior::new(&mut room.msg_edit));
+                            if let Some(room) = state.current_room_state_mut() {
+                                input.chain(EditBehavior::new(&mut room.tui.msg_edit));
                             }
                         }
                         BuiltinMode::Command => {
                             input
                                 .chain(
-                                    EditBehavior::new(&mut tui_state.command_line)
+                                    EditBehavior::new(&mut state.tui.command_line)
                                         .delete_forwards_on(Key::Delete)
                                         .delete_backwards_on(Key::Backspace)
                                         .left_on(Key::Left)
                                         .right_on(Key::Right),
                                 )
                                 .chain(
-                                    ScrollBehavior::new(&mut tui_state.command_line)
+                                    ScrollBehavior::new(&mut state.tui.command_line)
                                         .backwards_on(Key::Up)
                                         .forwards_on(Key::Down),
                                 );
                         }
                         BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread => {
                             input.chain(
-                                EditBehavior::new(&mut tui_state.room_filter_line)
+                                EditBehavior::new(&mut state.tui.room_filter_line)
                                     .delete_forwards_on(Key::Delete)
                                     .delete_backwards_on(Key::Backspace),
                             );
                         }
                     };
 
-                    if let Some(id) = &tui_state.room_selection.current() {
-                        if let Some(room) = state.rooms.get_mut(*id) {
-                            if let Some(read_event_id) = room.mark_newest_event_as_read() {
-                                send_read_receipt(&client, id.clone(), read_event_id);
-                            }
+                    if let Some(room) = state.current_room_state_mut() {
+                        if let Some(read_event_id) = room.mark_newest_event_as_read() {
+                            send_read_receipt(&client, &room.id, read_event_id);
                         }
                     }
                 }

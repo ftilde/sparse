@@ -1,3 +1,4 @@
+use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use rlua::{Lua, RegistryKey, UserData, UserDataMethods};
 
 use matrix_sdk::Client;
@@ -7,7 +8,7 @@ use unsegen::widget::builtin::TextEdit;
 use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
 
 use super::super::State;
-use super::{BuiltinMode, Mode, Tasks, TuiState};
+use super::{BuiltinMode, Mode, SendMessageType, Tasks};
 use crate::config::Config;
 
 pub struct KeyAction<'a>(pub &'a RegistryKey);
@@ -15,7 +16,6 @@ pub struct KeyAction<'a>(pub &'a RegistryKey);
 pub struct CommandContext<'a> {
     pub client: &'a Client,
     pub state: &'a mut State,
-    pub tui_state: &'a mut TuiState,
     pub config: &'a Config,
     pub tasks: Tasks<'a>,
     pub continue_running: &'a mut bool,
@@ -104,8 +104,34 @@ pub type ActionArgsString = fn(&mut CommandContext, String) -> ActionResult;
 
 pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     ("send_message", |c| {
-        if let Some(room) = c.tui_state.current_room_state_mut() {
-            room.send_current_message(&c.client).into()
+        if let Some(room) = c.state.current_room_state_mut() {
+            let msg = room.tui.msg_edit.get().to_owned();
+            if !msg.is_empty() {
+                room.tui.msg_edit.clear().unwrap();
+                let mut tmp_type = SendMessageType::Simple;
+                std::mem::swap(&mut tmp_type, &mut room.tui.msg_edit_type);
+                if let Some(room) = c.client.get_joined_room(&room.id) {
+                    tokio::spawn(async move {
+                        let content = match tmp_type {
+                            SendMessageType::Simple => RoomMessageEventContent::text_plain(msg),
+                            SendMessageType::Reply(orig_msg) => {
+                                RoomMessageEventContent::text_reply_plain(msg, &orig_msg)
+                            }
+                        };
+                        room.send(
+                            matrix_sdk::ruma::events::AnyMessageEventContent::RoomMessage(content),
+                            None,
+                        )
+                        .await
+                        .unwrap();
+                    });
+                } else {
+                    tracing::error!("can't send message, no joined room");
+                }
+                ActionResult::Ok
+            } else {
+                ActionResult::Noop
+            }
         } else {
             ActionResult::Error("No current room".to_owned())
         }
@@ -115,80 +141,69 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
         ActionResult::Ok
     }),
     ("select_next_message", |c| {
-        super::messages::MessagesMut(c.state, c.tui_state)
+        super::messages::MessagesMut(c.state)
             .scroll_forwards()
             .into()
     }),
     ("select_prev_message", |c| {
-        super::messages::MessagesMut(c.state, c.tui_state)
+        super::messages::MessagesMut(c.state)
             .scroll_backwards()
             .into()
     }),
     ("deselect_message", |c| {
-        super::messages::MessagesMut(c.state, c.tui_state)
-            .scroll_to_end()
-            .into()
+        super::messages::MessagesMut(c.state).scroll_to_end().into()
     }),
     ("select_next_room", |c| {
-        super::rooms::RoomsMut(c.state, c.tui_state)
-            .scroll_forwards()
-            .into()
+        super::rooms::RoomsMut(c.state).scroll_forwards().into()
     }),
     ("select_prev_room", |c| {
-        super::rooms::RoomsMut(c.state, c.tui_state)
-            .scroll_backwards()
-            .into()
+        super::rooms::RoomsMut(c.state).scroll_backwards().into()
     }),
     ("select_room_history_next", |c| {
-        c.tui_state.room_selection.scroll_forwards().into()
+        c.state.tui.room_selection.scroll_forwards().into()
     }),
     ("select_room_history_prev", |c| {
-        c.tui_state.room_selection.scroll_backwards().into()
+        c.state.tui.room_selection.scroll_backwards().into()
     }),
     ("accept_room_selection", |c| {
-        let mut r = super::rooms::RoomsMut(&mut c.state, &mut c.tui_state);
+        let mut r = super::rooms::RoomsMut(&mut c.state);
         if !r.as_rooms().active_contains_current() {
             let _ = r.scroll_forwards(); // Implicitly select first
         }
-        c.tui_state
+        c.state
+            .tui
             .enter_mode(Mode::Builtin(BuiltinMode::Normal))
             .into()
     }),
     ("start_reply", |c| {
-        if let Some(id) = c.tui_state.room_selection.current() {
-            if let Some(room) = c.state.rooms.get(id) {
-                let tui_room = c.tui_state.current_room_state_mut().unwrap();
-                if let super::MessageSelection::Specific(eid) = &tui_room.selection {
-                    if let Some(m) = room.messages.message_from_id(&eid) {
-                        if let crate::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(
-                            msg,
-                        )) = m
-                        {
-                            tui_room.msg_edit_type = super::SendMessageType::Reply(msg.clone());
-                            tui_room.selection = super::MessageSelection::Newest;
-                            ActionResult::Ok
-                        } else {
-                            ActionResult::Error(format!(
-                                "Only simple message events can be replied to",
-                            ))
-                        }
+        if let Some(room) = c.state.current_room_state_mut() {
+            if let super::MessageSelection::Specific(eid) = &room.tui.selection {
+                if let Some(m) = room.messages.message_from_id(&eid) {
+                    if let crate::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(msg)) =
+                        m
+                    {
+                        room.tui.msg_edit_type = super::SendMessageType::Reply(msg.clone());
+                        room.tui.selection = super::MessageSelection::Newest;
+                        ActionResult::Ok
                     } else {
-                        ActionResult::Error(format!("Cannot find message with id {:?}", eid))
+                        ActionResult::Error(
+                            format!("Only simple message events can be replied to",),
+                        )
                     }
                 } else {
-                    ActionResult::Error("No message selected".to_owned())
+                    ActionResult::Error(format!("Cannot find message with id {:?}", eid))
                 }
             } else {
-                ActionResult::Error("No room state".to_owned())
+                ActionResult::Error("No message selected".to_owned())
             }
         } else {
             ActionResult::Error("No current room".to_owned())
         }
     }),
     ("cancel_reply", |c| {
-        if let Some(tui_room) = c.tui_state.current_room_state_mut() {
-            if !matches!(tui_room.msg_edit_type, super::SendMessageType::Simple) {
-                tui_room.msg_edit_type = super::SendMessageType::Simple;
+        if let Some(room) = c.state.current_room_state_mut() {
+            if !matches!(room.tui.msg_edit_type, super::SendMessageType::Simple) {
+                room.tui.msg_edit_type = super::SendMessageType::Simple;
                 ActionResult::Ok
             } else {
                 ActionResult::Noop
@@ -198,36 +213,30 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
         }
     }),
     ("clear_message", |c| {
-        if let Some(room) = c.tui_state.current_room_state_mut() {
-            room.msg_edit.clear().into()
+        if let Some(room) = c.state.current_room_state_mut() {
+            room.tui.msg_edit.clear().into()
         } else {
             ActionResult::Error("No current room".to_owned())
         }
     }),
     ("clear_error_message", |c| {
-        if c.tui_state.last_error_message.is_some() {
-            c.tui_state.last_error_message = None;
+        if c.state.tui.last_error_message.is_some() {
+            c.state.tui.last_error_message = None;
             ActionResult::Ok
         } else {
             ActionResult::Noop
         }
     }),
     ("open_selected_message", |c| {
-        if let Some(r) = c.tui_state.current_room_state_mut() {
-            match &r.selection {
+        if let Some(r) = c.state.current_room_state_mut() {
+            match &r.tui.selection {
                 super::MessageSelection::Newest => {
                     ActionResult::Error("No message selected".to_owned())
                 }
                 super::MessageSelection::Specific(eid) => {
                     if let Some(crate::timeline::Event::Message(
                         AnySyncMessageEvent::RoomMessage(msg),
-                    )) = c
-                        .state
-                        .rooms
-                        .get(&r.id)
-                        .unwrap()
-                        .messages
-                        .message_from_id(&eid)
+                    )) = r.messages.message_from_id(&eid)
                     {
                         match &msg.content.msgtype {
                             MessageType::Text(t) => {
@@ -288,8 +297,8 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
         with_msg_edit(c, |e| e.go_to_end_of_line())
     }),
     ("run_command", |c| {
-        if !c.tui_state.command_line.get().is_empty() {
-            let cmd = c.tui_state.command_line.finish_line().to_owned();
+        if !c.state.tui.command_line.get().is_empty() {
+            let cmd = c.state.tui.command_line.finish_line().to_owned();
             match c.run_command(&cmd) {
                 Ok(r) => r,
                 Err(e) => ActionResult::Error(format!("{}", e)),
@@ -301,11 +310,11 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
 ];
 
 pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
-    ("type", |c, s| match c.tui_state.mode.builtin_mode() {
+    ("type", |c, s| match c.state.tui.mode.builtin_mode() {
         BuiltinMode::Normal | BuiltinMode::Insert => {
-            if let Some(room) = c.tui_state.current_room_state_mut() {
+            if let Some(room) = c.state.current_room_state_mut() {
                 for ch in s.chars() {
-                    room.msg_edit.write(ch).unwrap();
+                    room.tui.msg_edit.write(ch).unwrap();
                 }
                 ActionResult::Ok
             } else {
@@ -314,28 +323,28 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
         }
         BuiltinMode::Command => {
             for ch in s.chars() {
-                c.tui_state.command_line.write(ch).unwrap();
+                c.state.tui.command_line.write(ch).unwrap();
             }
             ActionResult::Ok
         }
         BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread => {
             for ch in s.chars() {
-                c.tui_state.room_filter_line.write(ch).unwrap();
+                c.state.tui.room_filter_line.write(ch).unwrap();
             }
             ActionResult::Ok
         }
     }),
     ("enter_mode", |c, s| match c.config.modes.get(&s) {
         None => ActionResult::Error(format!("'{}' is not a mode", s)),
-        Some(m) => c.tui_state.enter_mode(m).into(),
+        Some(m) => c.state.tui.enter_mode(m).into(),
     }),
     ("react", |c, s| {
-        if let Some(tui_room) = c.tui_state.current_room_state_mut() {
-            if let super::MessageSelection::Specific(eid) = &tui_room.selection {
+        if let Some(room) = c.state.current_room_state_mut() {
+            if let super::MessageSelection::Specific(eid) = &room.tui.selection {
                 let reaction = matrix_sdk::ruma::events::reaction::ReactionEventContent::new(
                     matrix_sdk::ruma::events::reaction::Relation::new(eid.clone(), s),
                 );
-                if let Some(joined_room) = c.client.get_joined_room(&tui_room.id) {
+                if let Some(joined_room) = c.client.get_joined_room(&room.id) {
                     let client = c.client.clone();
                     let room_id = joined_room.room_id().to_owned();
                     tokio::spawn(async move {
@@ -365,7 +374,7 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
         }
     }),
     ("send_file", |c, path| {
-        if let Some(room) = c.tui_state.current_room_state_mut() {
+        if let Some(room) = c.state.current_room_state_mut() {
             if let Some(joined_room) = c.client.get_joined_room(&room.id) {
                 let path = std::path::PathBuf::from(path);
                 match std::fs::File::open(&path) {
@@ -398,8 +407,8 @@ fn with_msg_edit(
     c: &mut CommandContext,
     mut f: impl FnMut(&mut TextEdit) -> OperationResult,
 ) -> ActionResult {
-    if let Some(room) = c.tui_state.current_room_state_mut() {
-        let _ = f(&mut room.msg_edit);
+    if let Some(room) = c.state.current_room_state_mut() {
+        let _ = f(&mut room.tui.msg_edit);
         ActionResult::Ok
     } else {
         ActionResult::Error("No current room".to_owned())

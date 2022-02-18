@@ -8,7 +8,7 @@ use unsegen::widget::*;
 use crate::timeline::{EventWalkResult, EventWalkResultNewest, MessageQuery};
 use crate::tui_app::State;
 
-use crate::tui_app::tui::{MessageSelection, Tasks, TuiState};
+use crate::tui_app::tui::{MessageSelection, Tasks};
 
 use matrix_sdk::{
     self,
@@ -26,13 +26,13 @@ macro_rules! message_fetch_symbol {
     };
 }
 
-pub struct MessagesMut<'a>(pub &'a State, pub &'a mut TuiState);
+pub struct MessagesMut<'a>(pub &'a mut State);
 
 impl Scrollable for MessagesMut<'_> {
     fn scroll_backwards(&mut self) -> OperationResult {
-        let mut current = self.1.current_room_state_mut().ok_or(())?;
-        let messages = &self.0.rooms.get(&current.id).ok_or(())?.messages;
-        let pos = match &current.selection {
+        let mut current = self.0.current_room_state_mut().ok_or(())?;
+        let messages = &current.messages;
+        let pos = match &current.tui.selection {
             MessageSelection::Newest => messages.walk_from_newest().message(),
             MessageSelection::Specific(id) => {
                 let pos = messages.walk_from_known(&id).message().ok_or(())?;
@@ -40,19 +40,20 @@ impl Scrollable for MessagesMut<'_> {
             }
         }
         .ok_or(())?;
-        current.selection = MessageSelection::Specific(messages.message(pos).event_id().to_owned());
+        current.tui.selection =
+            MessageSelection::Specific(messages.message(pos).event_id().to_owned());
         Ok(())
     }
 
     fn scroll_forwards(&mut self) -> OperationResult {
-        let mut current = self.1.current_room_state_mut().ok_or(())?;
-        let messages = &self.0.rooms.get(&current.id).ok_or(())?.messages;
-        let pos = match &current.selection {
+        let mut current = self.0.current_room_state_mut().ok_or(())?;
+        let messages = &current.messages;
+        let pos = match &current.tui.selection {
             MessageSelection::Newest => return Err(()),
             MessageSelection::Specific(id) => messages.walk_from_known(&id).message(),
         }
         .ok_or(())?;
-        current.selection = match messages.next(pos) {
+        current.tui.selection = match messages.next(pos) {
             EventWalkResult::End => MessageSelection::Newest,
             EventWalkResult::Message(pos) => {
                 MessageSelection::Specific(messages.message(pos).event_id().to_owned())
@@ -63,8 +64,8 @@ impl Scrollable for MessagesMut<'_> {
     }
 
     fn scroll_to_end(&mut self) -> OperationResult {
-        let mut current = self.1.current_room_state_mut().ok_or(())?;
-        current.selection = match &current.selection {
+        let mut current = self.0.current_room_state_mut().ok_or(())?;
+        current.tui.selection = match &current.tui.selection {
             MessageSelection::Newest => return Err(()),
             MessageSelection::Specific(_id) => MessageSelection::Newest,
         };
@@ -72,7 +73,7 @@ impl Scrollable for MessagesMut<'_> {
     }
 }
 
-pub struct Messages<'a>(pub &'a State, pub &'a TuiState, pub Tasks<'a>);
+pub struct Messages<'a>(pub &'a State, pub Tasks<'a>);
 
 impl Messages<'_> {
     fn draw_up_from<'b>(
@@ -107,7 +108,7 @@ impl Messages<'_> {
                 EventWalkResult::RequiresFetch => {
                     let mut c = Cursor::new(&mut window);
                     write!(&mut c, message_fetch_symbol!()).unwrap();
-                    self.2
+                    self.1
                         .set_message_query(room.to_owned(), MessageQuery::BeforeCache);
                     break;
                 }
@@ -125,7 +126,7 @@ impl Messages<'_> {
             EventWalkResultNewest::Message(m) => m,
             EventWalkResultNewest::End => return,
             EventWalkResultNewest::RequiresFetch(latest) => {
-                self.2
+                self.1
                     .set_message_query(room.to_owned(), MessageQuery::Newest);
 
                 let split = (window.get_height() - 1).from_origin();
@@ -226,7 +227,7 @@ impl Messages<'_> {
                 EventWalkResult::RequiresFetch => {
                     let mut c = Cursor::new(&mut window);
                     write!(&mut c, message_fetch_symbol!()).unwrap();
-                    self.2
+                    self.1
                         .set_message_query(room.to_owned(), MessageQuery::AfterCache);
                     break;
                 }
@@ -243,24 +244,13 @@ impl Widget for Messages<'_> {
         }
     }
 
-    fn draw(&self, mut window: Window, hints: RenderingHints) {
-        if let Some(current) = self.1.current_room_state().as_ref() {
-            if let Some(state) = self.0.rooms.get(&current.id) {
-                match &current.selection {
-                    MessageSelection::Newest => self.draw_newest(window, hints, &current.id, state),
-                    MessageSelection::Specific(id) => {
-                        self.draw_selected(window, hints, id, &current.id, state)
-                    }
+    fn draw(&self, window: Window, hints: RenderingHints) {
+        if let Some(current) = self.0.current_room_state().as_ref() {
+            match &current.tui.selection {
+                MessageSelection::Newest => self.draw_newest(window, hints, &current.id, current),
+                MessageSelection::Specific(id) => {
+                    self.draw_selected(window, hints, id, &current.id, current)
                 }
-            } else {
-                let mut c = Cursor::new(&mut window);
-                c.move_to_bottom();
-                write!(&mut c, message_fetch_symbol!()).unwrap();
-                let query = match &current.selection {
-                    MessageSelection::Newest => MessageQuery::Newest,
-                    MessageSelection::Specific(_id) => MessageQuery::BeforeCache,
-                };
-                self.2.set_message_query(current.id.to_owned(), query);
             }
         }
     }

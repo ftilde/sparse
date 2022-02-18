@@ -83,12 +83,15 @@ async fn calculate_user_colors(room: &Room) -> UserColors {
 }
 
 pub struct RoomState {
+    id: Box<RoomId>,
     pub messages: timeline::RoomTimelineCache,
     name: String,
     latest_read_message: Option<Box<EventId>>,
     num_unread_notifications: u64,
     last_notification_handle: Option<notify_rust::NotificationHandle>,
     user_colors: UserColors,
+
+    pub tui: tui::RoomTuiState,
 }
 
 impl RoomState {
@@ -100,12 +103,14 @@ impl RoomState {
             .unwrap()
             .map(|(id, _)| id);
         RoomState {
+            id: room.room_id().to_owned(),
             messages: timeline::RoomTimelineCache::default(),
             name,
             latest_read_message,
             num_unread_notifications: room.unread_notification_counts().notification_count,
             last_notification_handle: None,
             user_colors: calculate_user_colors(room).await,
+            tui: tui::RoomTuiState::at_last_message(),
         }
     }
 
@@ -135,9 +140,14 @@ impl RoomState {
 
 pub struct State {
     pub rooms: BTreeMap<Box<RoomId>, RoomState>,
+    tui: tui::TuiState,
 }
 
 impl State {
+    fn new(rooms: BTreeMap<Box<RoomId>, RoomState>) -> Self {
+        let tui = crate::tui_app::tui::TuiState::new(rooms.keys().next().map(|k| &**k));
+        State { rooms, tui }
+    }
     async fn update_room_info(&mut self, room: &Room) {
         match room {
             Room::Joined(_) => {
@@ -153,6 +163,19 @@ impl State {
                 self.rooms.remove(room.room_id());
             }
             Room::Invited(_) => { /*TODO*/ }
+        }
+    }
+    fn current_room_state(&self) -> Option<&RoomState> {
+        self.tui
+            .room_selection
+            .current()
+            .map(|r| self.rooms.get(r).unwrap())
+    }
+    fn current_room_state_mut(&mut self) -> Option<&mut RoomState> {
+        if let Some(id) = self.tui.room_selection.current() {
+            Some(self.rooms.get_mut(id).unwrap())
+        } else {
+            None
         }
     }
 }
@@ -392,10 +415,6 @@ pub async fn run(
     config: crate::config::Config,
     command_environment: tui::actions::CommandEnvironment,
 ) -> Result<(), matrix_sdk::Error> {
-    let state = Arc::new(Mutex::new(State {
-        rooms: BTreeMap::new(),
-    }));
-
     // Fetch the initial list of rooms. This is required (for some reason) because joined_rooms()
     // returns an empty vec on the first start for some reason.
     //
@@ -419,10 +438,7 @@ pub async fn run(
             rooms.insert(id.to_owned(), RoomState::from_room(&room).await);
         }
     }
-    {
-        let mut state = state.lock().await;
-        state.rooms = rooms;
-    }
+    let state = Arc::new(Mutex::new(State::new(rooms)));
 
     let (event_sender, event_receiver) = mpsc::channel(1);
     let (message_query_sender, message_query_receiver) = watch::channel(None);
