@@ -8,7 +8,7 @@ use unsegen::widget::builtin::TextEdit;
 use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
 
 use super::super::State;
-use super::{BuiltinMode, Mode, SendMessageType, Tasks};
+use super::{BuiltinMode, SendMessageType, Tasks};
 use crate::config::Config;
 
 pub struct KeyAction<'a>(pub &'a RegistryKey);
@@ -165,15 +165,14 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     ("select_room_history_prev", |c| {
         c.state.tui.room_selection.scroll_backwards().into()
     }),
-    ("accept_room_selection", |c| {
+    ("force_room_selection", |c| {
         let mut r = super::rooms::RoomsMut(&mut c.state);
         if !r.as_rooms().active_contains_current() {
             let _ = r.scroll_forwards(); // Implicitly select first
+            ActionResult::Ok
+        } else {
+            ActionResult::Noop
         }
-        c.state
-            .tui
-            .enter_mode(Mode::Builtin(BuiltinMode::Normal))
-            .into()
     }),
     ("start_reply", |c| {
         if let Some(room) = c.state.current_room_state_mut() {
@@ -307,36 +306,49 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             ActionResult::Noop
         }
     }),
+    ("pop_mode", |c| match c.state.tui.pop_mode() {
+        Ok(()) => ActionResult::Ok,
+        Err(()) => ActionResult::Error("Cannot pop last element from mode stack.".to_owned()),
+    }),
 ];
 
 pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
-    ("type", |c, s| match c.state.tui.mode.builtin_mode() {
-        BuiltinMode::Normal | BuiltinMode::Insert => {
-            if let Some(room) = c.state.current_room_state_mut() {
+    ("type", |c, s| {
+        match c.state.tui.current_mode().builtin_mode() {
+            BuiltinMode::Normal | BuiltinMode::Insert => {
+                if let Some(room) = c.state.current_room_state_mut() {
+                    for ch in s.chars() {
+                        room.tui.msg_edit.write(ch).unwrap();
+                    }
+                    ActionResult::Ok
+                } else {
+                    ActionResult::Error("No current room".to_owned())
+                }
+            }
+            BuiltinMode::Command => {
                 for ch in s.chars() {
-                    room.tui.msg_edit.write(ch).unwrap();
+                    c.state.tui.command_line.write(ch).unwrap();
                 }
                 ActionResult::Ok
-            } else {
-                ActionResult::Error("No current room".to_owned())
             }
-        }
-        BuiltinMode::Command => {
-            for ch in s.chars() {
-                c.state.tui.command_line.write(ch).unwrap();
+            BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread => {
+                for ch in s.chars() {
+                    c.state.tui.room_filter_line.write(ch).unwrap();
+                }
+                ActionResult::Ok
             }
-            ActionResult::Ok
-        }
-        BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread => {
-            for ch in s.chars() {
-                c.state.tui.room_filter_line.write(ch).unwrap();
-            }
-            ActionResult::Ok
         }
     }),
-    ("enter_mode", |c, s| match c.config.modes.get(&s) {
+    ("switch_mode", |c, s| match c.config.modes.get(&s) {
         None => ActionResult::Error(format!("'{}' is not a mode", s)),
-        Some(m) => c.state.tui.enter_mode(m).into(),
+        Some(m) => c.state.tui.switch_mode(m).into(),
+    }),
+    ("push_mode", |c, s| match c.config.modes.get(&s) {
+        None => ActionResult::Error(format!("'{}' is not a mode", s)),
+        Some(m) => {
+            c.state.tui.push_mode(m);
+            ActionResult::Ok
+        }
     }),
     ("react", |c, s| {
         if let Some(room) = c.state.current_room_state_mut() {

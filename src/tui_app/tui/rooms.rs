@@ -26,7 +26,7 @@ impl<'a> Rooms<'a> {
         let mixed = s != s_lower;
         let rooms = self.all_rooms();
         let only_with_unread = matches!(
-            self.0.tui.mode.builtin_mode(),
+            self.0.tui.current_mode().builtin_mode(),
             BuiltinMode::RoomFilterUnread
         );
         rooms.filter(move |(_i, r)| {
@@ -53,7 +53,7 @@ impl<'a> Rooms<'a> {
         let mut layout = VLayout::new();
 
         if let BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread =
-            self.0.tui.mode.builtin_mode()
+            self.0.tui.current_mode().builtin_mode()
         {
             layout = layout.widget(
                 HLayout::new()

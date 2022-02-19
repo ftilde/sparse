@@ -123,7 +123,7 @@ impl Scrollable for RoomSelectionHistory {
 
 pub struct TuiState {
     pub room_selection: RoomSelectionHistory,
-    mode: Mode,
+    mode_stack: Vec<Mode>, // Invariant: always at least one element
     room_filter_line: LineEdit,
     command_line: PromptLine,
     previous_keys: Keys,
@@ -141,7 +141,11 @@ fn key_action_behavior<'a>(
             return Some(input);
         }
         std::mem::swap(&mut new_keys, &mut c.state.tui.previous_keys);
-        match c.config.keymaps.find_action(&c.state.tui.mode, &new_keys) {
+        match c
+            .config
+            .keymaps
+            .find_action(&c.state.tui.current_mode(), &new_keys)
+        {
             KeyMapFunctionResult::IsPrefix(_) => {
                 c.state.tui.previous_keys = new_keys;
                 None
@@ -168,7 +172,7 @@ impl TuiState {
     pub fn new(current_room: Option<&RoomId>) -> Self {
         let mut s = TuiState {
             room_selection: RoomSelectionHistory::default(),
-            mode: Mode::default(),
+            mode_stack: vec![Mode::default()],
             room_filter_line: LineEdit::new(),
             command_line: PromptLine::with_prompt(":".to_owned()),
             previous_keys: Keys(Vec::new()),
@@ -177,9 +181,13 @@ impl TuiState {
         s.set_current_room(current_room);
         s
     }
-    fn enter_mode(&mut self, mode: Mode) -> OperationResult {
-        let new = mode.builtin_mode();
-        let previous = self.mode.builtin_mode();
+    fn current_mode(&self) -> &Mode {
+        self.mode_stack.last().unwrap()
+    }
+    fn current_mode_mut(&mut self) -> &mut Mode {
+        self.mode_stack.last_mut().unwrap()
+    }
+    fn handle_mode_change_side_effects(&mut self, previous: BuiltinMode, new: BuiltinMode) {
         if !matches!(new, BuiltinMode::RoomFilter | BuiltinMode::RoomFilterUnread)
             && matches!(
                 previous,
@@ -191,12 +199,37 @@ impl TuiState {
         if !matches!(new, BuiltinMode::Command) && matches!(previous, BuiltinMode::Command) {
             let _ = self.command_line.clear();
         }
-        if self.mode != mode {
-            self.mode = mode;
+    }
+    fn switch_mode(&mut self, mode: Mode) -> OperationResult {
+        self.handle_mode_change_side_effects(
+            self.current_mode().builtin_mode(),
+            mode.builtin_mode(),
+        );
+        let current = self.current_mode_mut();
+        if *current != mode {
+            *current = mode;
             Ok(())
         } else {
             Err(())
         }
+    }
+    fn push_mode(&mut self, mode: Mode) {
+        self.handle_mode_change_side_effects(
+            self.current_mode().builtin_mode(),
+            mode.builtin_mode(),
+        );
+        self.mode_stack.push(mode);
+    }
+    fn pop_mode(&mut self) -> OperationResult {
+        if self.mode_stack.len() == 1 {
+            return Err(());
+        }
+        let old = self.mode_stack.pop().unwrap();
+        self.handle_mode_change_side_effects(
+            old.builtin_mode(),
+            self.current_mode().builtin_mode(),
+        );
+        Ok(())
     }
     fn set_current_room(&mut self, id: Option<&RoomId>) {
         if let Some(id) = id {
@@ -256,13 +289,16 @@ fn bottom_bar<'a>(tui_state: &'a TuiState) -> impl Widget + 'a {
 
     if let Some(msg) = &tui_state.last_error_message {
         hlayout = hlayout.widget(msg)
-    } else if matches!(tui_state.mode.builtin_mode(), BuiltinMode::Command) {
+    } else if matches!(
+        tui_state.current_mode().builtin_mode(),
+        BuiltinMode::Command
+    ) {
         hlayout = hlayout.widget(tui_state.command_line.as_widget())
     }
 
     hlayout = hlayout
         .widget(spacer)
-        .widget(tui_state.mode.to_string())
+        .widget(tui_state.current_mode().to_string())
         .widget(format!("{}", tui_state.previous_keys));
     hlayout
 }
@@ -277,7 +313,7 @@ fn tui<'a>(state: &'a State, tasks: Tasks<'a>) -> impl Widget + 'a {
                 .widget(messages::Messages(state, tasks))
                 .widget(msg_edit(
                     room,
-                    matches!(state.tui.mode.builtin_mode(), BuiltinMode::Insert),
+                    matches!(state.tui.current_mode().builtin_mode(), BuiltinMode::Insert),
                 )),
             0.75,
         )
@@ -385,7 +421,7 @@ pub async fn run_tui(
                         command_environment: &command_environment,
                     };
                     let input = input.chain(key_action_behavior(&mut c));
-                    match state.tui.mode.builtin_mode() {
+                    match state.tui.current_mode().builtin_mode() {
                         BuiltinMode::Normal => {}
                         BuiltinMode::Insert => {
                             if let Some(room) = state.current_room_state_mut() {
