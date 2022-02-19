@@ -401,6 +401,33 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
             ActionResult::Error("No current room".to_owned())
         }
     }),
+    ("save_file", |c, path| {
+        if let Some(r) = c.state.current_room_state() {
+            match &r.tui.selection {
+                super::MessageSelection::Newest => {
+                    ActionResult::Error("No message selected".to_owned())
+                }
+                super::MessageSelection::Specific(eid) => {
+                    if let Some(crate::timeline::Event::Message(
+                        AnySyncMessageEvent::RoomMessage(msg),
+                    )) = r.messages.message_from_id(&eid)
+                    {
+                        match &msg.content.msgtype {
+                            MessageType::Image(f) => save_file(c.client.clone(), f.clone(), &path),
+                            MessageType::Video(f) => save_file(c.client.clone(), f.clone(), &path),
+                            MessageType::Audio(f) => save_file(c.client.clone(), f.clone(), &path),
+                            MessageType::File(f) => save_file(c.client.clone(), f.clone(), &path),
+                            o => ActionResult::Error(format!("No file to save in message {:?}", o)),
+                        }
+                    } else {
+                        ActionResult::Error("No message selected".to_owned())
+                    }
+                }
+            }
+        } else {
+            ActionResult::Error("No current room".to_owned())
+        }
+    }),
 ];
 
 fn with_msg_edit(
@@ -426,43 +453,73 @@ fn open_url(config: &Config, url: String) {
     });
 }
 
+async fn write_file(
+    c: Client,
+    content: impl matrix_sdk::media::MediaEventContent + Send,
+    target: &mut (dyn std::io::Write + Send),
+) -> Result<(), String> {
+    if let Some(media_type) = content.file() {
+        match c
+            .get_media_content(
+                &matrix_sdk::media::MediaRequest {
+                    media_type,
+                    format: matrix_sdk::media::MediaFormat::File,
+                },
+                true,
+            )
+            .await
+        {
+            Ok(bytes) => {
+                target.write_all(&bytes[..]).unwrap();
+                target.flush().unwrap();
+                Ok(())
+            }
+            Err(e) => Err(format!("can't open file: {:?}", e)),
+        }
+    } else {
+        Err("can't open file: No content".to_owned())
+    }
+}
+
 fn open_file(
     c: Client,
     config: &Config,
-    content: impl matrix_sdk::media::MediaEventContent + Send,
+    content: impl matrix_sdk::media::MediaEventContent + Send + Sync + 'static,
 ) {
     let open_prog = config.file_open_program.clone();
-    if let Some(media_type) = content.file() {
-        tokio::spawn(async move {
-            match c
-                .get_media_content(
-                    &matrix_sdk::media::MediaRequest {
-                        media_type,
-                        format: matrix_sdk::media::MediaFormat::File,
-                    },
-                    true,
-                )
-                .await
-            {
-                Ok(bytes) => {
-                    let path = {
-                        use std::io::Write;
-                        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
-                        tmpfile.write_all(&bytes[..]).unwrap();
-                        tmpfile.flush().unwrap();
-                        tmpfile.into_temp_path()
-                    };
-                    let mut join_handle = tokio::process::Command::new(open_prog)
-                        .arg(&path)
-                        .spawn()
-                        .unwrap();
-                    join_handle.wait().await.unwrap();
-                    path.keep().unwrap(); //We don't know if the file was opened when xdg-open finished...
-                }
-                Err(e) => tracing::error!("can't open file: {:?}", e),
+    tokio::spawn(async move {
+        let path = {
+            let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+            if let Err(e) = write_file(c, content, &mut tmpfile).await {
+                tracing::error!("{}", e);
+                return;
             }
-        });
-    } else {
-        tracing::error!("can't open file: No content");
+            tmpfile.into_temp_path()
+        };
+        let mut join_handle = tokio::process::Command::new(open_prog)
+            .arg(&path)
+            .spawn()
+            .unwrap();
+        join_handle.wait().await.unwrap();
+        path.keep().unwrap(); //We don't know if the file was opened when xdg-open finished...
+    });
+}
+
+fn save_file(
+    c: Client,
+    content: impl matrix_sdk::media::MediaEventContent + Send + Sync + 'static,
+    path: &str,
+) -> ActionResult {
+    let path = std::path::PathBuf::from(path);
+    match std::fs::File::create(&path) {
+        Ok(mut file) => {
+            tokio::spawn(async move {
+                if let Err(e) = write_file(c, content, &mut file).await {
+                    tracing::error!("{}", e);
+                }
+            });
+            ActionResult::Ok
+        }
+        Err(e) => ActionResult::Error(format!("Cannot open file for sending: {:?}", e)),
     }
 }
