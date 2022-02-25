@@ -38,6 +38,7 @@ rlua = "0.17"
 linkify = "0.7"
 sequence_trie = "0.3.4"
 mime_guess = "2.0"
+cli-clipboard = "0.2"
 
 uuid = "*" #Consider removing once reactions in matrix-sdk are fixed.
 

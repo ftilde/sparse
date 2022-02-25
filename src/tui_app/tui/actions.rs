@@ -7,6 +7,8 @@ use unsegen::widget::builtin::TextEdit;
 
 use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
 
+use cli_clipboard::ClipboardProvider;
+
 use super::super::State;
 use super::{BuiltinMode, SendMessageType, Tasks};
 use crate::config::Config;
@@ -52,6 +54,24 @@ impl UserData for &mut CommandContext<'_> {
         for (name, f) in ACTIONS_ARGS_STRING {
             methods.add_method_mut(name, move |_, this, s: String| Ok(f(this, s)));
         }
+        methods.add_method_mut("get_clipboard", move |_, this, _: ()| {
+            if let Some(clipboard) = &mut this.state.clipboard_context {
+                clipboard.get_contents().map_err(|e| {
+                    rlua::Error::RuntimeError(format!("Failed to get clipboard content: {}", e))
+                })
+            } else {
+                Ok("".to_owned())
+            }
+        });
+        methods.add_method_mut("set_clipboard", move |_, this, s: String| {
+            if let Some(clipboard) = &mut this.state.clipboard_context {
+                clipboard.set_contents(s).map_err(|e| {
+                    rlua::Error::RuntimeError(format!("Failed to get clipboard content: {}", e))
+                })
+            } else {
+                Ok(())
+            }
+        });
         methods.add_method_mut("get_message_content", move |_, this, _: ()| {
             if let Some(r) = this.state.current_room_state_mut() {
                 match &r.tui.selection {

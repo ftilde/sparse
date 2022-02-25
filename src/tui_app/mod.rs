@@ -141,12 +141,28 @@ impl RoomState {
 pub struct State {
     pub rooms: BTreeMap<Box<RoomId>, RoomState>,
     tui: tui::TuiState,
+    clipboard_context: Option<cli_clipboard::ClipboardContext>,
+}
+
+fn init_clipboard() -> Option<cli_clipboard::ClipboardContext> {
+    use cli_clipboard::ClipboardProvider;
+    match cli_clipboard::ClipboardContext::new() {
+        Ok(c) => Some(c),
+        Err(e) => {
+            tracing::error!("Failed to initiate clipboard {}", e);
+            None
+        }
+    }
 }
 
 impl State {
     fn new(rooms: BTreeMap<Box<RoomId>, RoomState>) -> Self {
         let tui = crate::tui_app::tui::TuiState::new(rooms.keys().next().map(|k| &**k));
-        State { rooms, tui }
+        State {
+            rooms,
+            tui,
+            clipboard_context: init_clipboard(),
+        }
     }
     async fn update_room_info(&mut self, room: &Room) {
         match room {
