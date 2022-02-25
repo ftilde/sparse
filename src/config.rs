@@ -1,4 +1,4 @@
-use rlua::{Lua, RegistryKey, UserData, UserDataMethods, Value};
+use rlua::{Lua, RegistryKey, Value};
 use sequence_trie::SequenceTrie;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -8,8 +8,7 @@ use url::Url;
 
 use crate::tui_app::tui::{
     actions::{
-        ActionResult, CommandContext, CommandEnvironment, KeyAction, ACTIONS_ARGS_NONE,
-        ACTIONS_ARGS_STRING,
+        ActionResult, CommandEnvironment, KeyAction, ACTIONS_ARGS_NONE, ACTIONS_ARGS_STRING,
     },
     BuiltinMode, Mode, ModeSet,
 };
@@ -227,17 +226,6 @@ impl rlua::FromLua<'_> for Keys {
                 "'{:?}' is not a valid key sequence",
                 lua_value
             )))
-        }
-    }
-}
-
-impl UserData for &mut CommandContext<'_> {
-    fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
-        for (name, f) in ACTIONS_ARGS_NONE {
-            methods.add_method_mut(name, move |_, this, _: ()| Ok(f(this)));
-        }
-        for (name, f) in ACTIONS_ARGS_STRING {
-            methods.add_method_mut(name, move |_, this, s: String| Ok(f(this, s)));
         }
     }
 }

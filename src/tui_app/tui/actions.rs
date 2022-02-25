@@ -44,6 +44,40 @@ impl<'a> CommandContext<'a> {
     }
 }
 
+impl UserData for &mut CommandContext<'_> {
+    fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
+        for (name, f) in ACTIONS_ARGS_NONE {
+            methods.add_method_mut(name, move |_, this, _: ()| Ok(f(this)));
+        }
+        for (name, f) in ACTIONS_ARGS_STRING {
+            methods.add_method_mut(name, move |_, this, s: String| Ok(f(this, s)));
+        }
+        methods.add_method_mut("get_message_content", move |_, this, _: ()| {
+            if let Some(r) = this.state.current_room_state_mut() {
+                match &r.tui.selection {
+                    super::MessageSelection::Newest => {
+                        Err(rlua::Error::RuntimeError("No message selected".to_owned()))
+                    }
+                    super::MessageSelection::Specific(eid) => {
+                        if let Some(crate::timeline::Event::Message(
+                            AnySyncMessageEvent::RoomMessage(msg),
+                        )) = r.messages.message_from_id(&eid)
+                        {
+                            Ok(msg.content.body().to_owned())
+                        } else {
+                            Err(rlua::Error::RuntimeError(
+                                "Can only get content from message events".to_owned(),
+                            ))
+                        }
+                    }
+                }
+            } else {
+                Err(rlua::Error::RuntimeError("No current room".to_owned()))
+            }
+        });
+    }
+}
+
 pub struct CommandEnvironment {
     lua: Lua,
 }
