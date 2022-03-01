@@ -101,8 +101,12 @@ impl RoomTimelineCache {
         self.reactions.get(id)
     }
 
-    fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.messages.clear();
+        self.begin = CacheEndState::Open;
+        self.end = CacheEndState::Open;
+        self.begin_token = None;
+        self.end_token = None;
     }
 
     fn pre_process_message(&mut self, msg: Event) -> Option<Event> {
@@ -275,7 +279,7 @@ impl RoomTimelineCache {
                     // cache is invalid now. :(
                     self.begin_token = Some(batch.end.unwrap());
                     self.begin = CacheEndState::Open;
-                    self.clear();
+                    self.messages.clear();
                 }
                 self.end_token = Some(batch.start.unwrap());
                 self.end = CacheEndState::Reached;
@@ -296,7 +300,7 @@ impl RoomTimelineCache {
             let events = batch.events.into_iter();
 
             if batch.limited {
-                self.clear();
+                self.messages.clear();
                 if let Some(token) = batch.prev_batch {
                     self.begin_token = Some(token);
                     self.begin = CacheEndState::Open;

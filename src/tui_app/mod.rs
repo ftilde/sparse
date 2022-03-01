@@ -3,10 +3,11 @@ use matrix_sdk::{
     config::SyncSettings,
     room::Room,
     ruma::api::client::r0::push::get_notifications::Notification,
-    ruma::events::AnySyncRoomEvent,
     ruma::identifiers::{EventId, RoomId},
     ruma::{
-        events::{room::message::MessageType, AnySyncMessageEvent},
+        events::{
+            room::message::MessageType, AnySyncMessageEvent, AnySyncRoomEvent, AnyToDeviceEvent,
+        },
         UserId,
     },
     Client, LoopCtrl,
@@ -277,6 +278,12 @@ async fn handle_notification(c: &Connection, room: &Room, notification: Notifica
         }
     }
 }
+async fn reset_timeline_cache(c: &Connection, room_id: &RoomId) {
+    tracing::info!("Reseting cache of room {} due to new room key", room_id);
+    let mut state = c.state.lock().await;
+    let m = &mut state.rooms.get_mut(room_id).unwrap().messages;
+    m.clear();
+}
 
 async fn run_matrix_event_loop(c: Connection) {
     // since we called `sync_once` before we entered our sync loop we must pass
@@ -291,6 +298,20 @@ async fn run_matrix_event_loop(c: Connection) {
                 if let Some(room) = c.client.get_room(&room_id) {
                     for notification in notifications {
                         handle_notification(c, &room, notification).await;
+                    }
+                }
+            }
+            for e in response.to_device.events {
+                match e.deserialize() {
+                    Ok(AnyToDeviceEvent::RoomKey(e)) => {
+                        reset_timeline_cache(&c, &e.content.room_id).await
+                    }
+                    Ok(AnyToDeviceEvent::ForwardedRoomKey(e)) => {
+                        reset_timeline_cache(&c, &e.content.room_id).await
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!("Failed to deserialize state event {}", e)
                     }
                 }
             }
