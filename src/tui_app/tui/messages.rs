@@ -88,7 +88,12 @@ impl Messages<'_> {
             msg = match msg {
                 EventWalkResult::Message(id) => {
                     let e = state.messages.message(id);
-                    let evt = TuiEvent(e, window.get_width(), state);
+                    let evt = TuiEvent {
+                        event: e,
+                        width: window.get_width(),
+                        room_state: state,
+                        selected: false,
+                    };
                     let h = evt.space_demand().height.min;
                     let window_height = window.get_height();
                     let (above, below) = match window.split((window_height - h).from_origin()) {
@@ -166,11 +171,15 @@ impl Messages<'_> {
         loop {
             match msg {
                 EventWalkResult::Message(id) => {
-                    collected_height +=
-                        TuiEvent(state.messages.message(id), window.get_width(), state)
-                            .space_demand()
-                            .height
-                            .min;
+                    collected_height += TuiEvent {
+                        event: state.messages.message(id),
+                        width: window.get_width(),
+                        room_state: state,
+                        selected: false,
+                    }
+                    .space_demand()
+                    .height
+                    .min;
                     msg = state.messages.next(id);
                 }
                 EventWalkResult::End => {
@@ -202,7 +211,12 @@ impl Messages<'_> {
         loop {
             msg = match msg {
                 EventWalkResult::Message(id) => {
-                    let evt = TuiEvent(state.messages.message(id), window.get_width(), state);
+                    let evt = TuiEvent {
+                        event: state.messages.message(id),
+                        width: window.get_width(),
+                        room_state: state,
+                        selected: drawing_selected,
+                    };
                     let h = evt.space_demand().height.min;
                     let (mut current, below) = match window.split(h.from_origin()) {
                         Ok(pair) => pair,
@@ -296,11 +310,12 @@ impl CursorTarget for StyledLine {
     }
 }
 
-struct TuiEvent<'a>(
-    &'a crate::timeline::Event,
-    Width,
-    &'a crate::tui_app::RoomState,
-);
+struct TuiEvent<'a> {
+    event: &'a crate::timeline::Event,
+    width: Width,
+    room_state: &'a crate::tui_app::RoomState,
+    selected: bool,
+}
 
 fn write_body<T: unsegen::base::CursorTarget>(c: &mut Cursor<T>, mut body: &str) {
     while let [b'>', b' ', ..] = body.as_bytes() {
@@ -667,7 +682,7 @@ impl DrawEvent for crate::tui_app::timeline::Event {
 impl TuiEvent<'_> {
     fn write_time<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
         use chrono::TimeZone;
-        let send_time_secs_unix = self.0.origin_server_ts().as_secs();
+        let send_time_secs_unix = self.event.origin_server_ts().as_secs();
         let send_time_naive =
             chrono::naive::NaiveDateTime::from_timestamp(send_time_secs_unix.into(), 0);
         let send_time = chrono::Local.from_utc_datetime(&send_time_naive);
@@ -681,23 +696,32 @@ impl TuiEvent<'_> {
         let start = c.get_col();
         c.set_line_start_column(start);
 
-        self.0.draw(self.2, c, false);
+        self.event.draw(self.room_state, c, false);
 
-        if let Some(reactions) = self.2.messages.reactions(self.0.event_id()) {
+        if let Some(reactions) = self.room_state.messages.reactions(self.event.event_id()) {
             {
                 let mut c = c.save().style_modifier();
                 c.set_style_modifier(StyleModifier::new().italic(true));
                 let _ = write!(c, "\nReactions: ");
             }
-            for (emoji, e) in reactions {
-                let _ = write!(c, "{}", emoji);
-                let n = e.len();
-                if n > 1 {
-                    let mut c = c.save().style_modifier();
-                    c.set_style_modifier(StyleModifier::new().italic(true));
-                    let _ = write!(c, " {}", n);
+            for (emoji, events) in reactions {
+                if self.selected {
+                    let _ = write!(c, "\n");
+                    for e in events {
+                        write_user(c, &e.sender, self.room_state);
+                        let _ = write!(c, " ");
+                    }
+                    let _ = write!(c, "{}", emoji);
+                } else {
+                    let _ = write!(c, "{}", emoji);
+                    let n = events.len();
+                    if n > 1 {
+                        let mut c = c.save().style_modifier();
+                        c.set_style_modifier(StyleModifier::new().italic(true));
+                        let _ = write!(c, " {}", n);
+                    }
+                    let _ = write!(c, "  ");
                 }
-                let _ = write!(c, "  ");
             }
         }
     }
@@ -705,7 +729,7 @@ impl TuiEvent<'_> {
 
 impl Widget for TuiEvent<'_> {
     fn space_demand(&self) -> unsegen::widget::Demand2D {
-        let mut est = unsegen::base::window::ExtentEstimationWindow::with_width(self.1);
+        let mut est = unsegen::base::window::ExtentEstimationWindow::with_width(self.width);
         let mut c = Cursor::new(&mut est);
         self.draw_with_cursor(&mut c);
         Demand2D {
