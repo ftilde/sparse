@@ -156,7 +156,7 @@ impl Messages<'_> {
         };
         self.draw_up_from(window, hints, EventWalkResult::Message(msg_id), room, state);
     }
-    fn draw_selected(
+    fn draw_specific(
         &self,
         window: Window,
         hints: RenderingHints,
@@ -171,11 +171,13 @@ impl Messages<'_> {
         loop {
             match msg {
                 EventWalkResult::Message(id) => {
+                    let event = state.messages.message(id);
+                    let selected = event.event_id() == selected_msg;
                     collected_height += TuiEvent {
-                        event: state.messages.message(id),
+                        event,
                         width: window.get_width(),
                         room_state: state,
-                        selected: false,
+                        selected,
                     }
                     .space_demand()
                     .height
@@ -207,15 +209,16 @@ impl Messages<'_> {
         }
         let mut window = below_selected;
         let mut msg = start_msg;
-        let mut drawing_selected = true;
         loop {
             msg = match msg {
                 EventWalkResult::Message(id) => {
+                    let event = state.messages.message(id);
+                    let selected = event.event_id() == selected_msg;
                     let evt = TuiEvent {
-                        event: state.messages.message(id),
+                        event,
                         width: window.get_width(),
                         room_state: state,
-                        selected: drawing_selected,
+                        selected,
                     };
                     let h = evt.space_demand().height.min;
                     let (mut current, below) = match window.split(h.from_origin()) {
@@ -225,11 +228,10 @@ impl Messages<'_> {
                         }
                     };
 
-                    if drawing_selected {
+                    if selected {
                         current.set_default_style(
                             StyleModifier::new().invert(true).apply_to_default(),
                         );
-                        drawing_selected = false;
                     }
                     evt.draw(current, hints);
                     window = below;
@@ -263,7 +265,7 @@ impl Widget for Messages<'_> {
             match &current.tui.selection {
                 MessageSelection::Newest => self.draw_newest(window, hints, &current.id, current),
                 MessageSelection::Specific(id) => {
-                    self.draw_selected(window, hints, id, &current.id, current)
+                    self.draw_specific(window, hints, id, &current.id, current)
                 }
             }
         }
