@@ -20,6 +20,8 @@ use matrix_sdk::{
     ruma::UserId,
 };
 
+use super::EventDetail;
+
 macro_rules! message_fetch_symbol {
     () => {
         "[...]"
@@ -73,6 +75,14 @@ impl Scrollable for MessagesMut<'_> {
     }
 }
 
+fn detailed(state: &State, selected: bool) -> bool {
+    match state.tui.event_detail {
+        EventDetail::Full => true,
+        EventDetail::Reduced => false,
+        EventDetail::Selected => selected,
+    }
+}
+
 pub struct Messages<'a>(pub &'a State, pub Tasks<'a>);
 
 impl Messages<'_> {
@@ -92,7 +102,7 @@ impl Messages<'_> {
                         event: e,
                         width: window.get_width(),
                         room_state: state,
-                        selected: false,
+                        detailed: detailed(&self.0, false),
                     };
                     let h = evt.space_demand().height.min;
                     let window_height = window.get_height();
@@ -177,7 +187,7 @@ impl Messages<'_> {
                         event,
                         width: window.get_width(),
                         room_state: state,
-                        selected,
+                        detailed: detailed(self.0, selected),
                     }
                     .space_demand()
                     .height
@@ -218,7 +228,7 @@ impl Messages<'_> {
                         event,
                         width: window.get_width(),
                         room_state: state,
-                        selected,
+                        detailed: detailed(self.0, selected),
                     };
                     let h = evt.space_demand().height.min;
                     let (mut current, below) = match window.split(h.from_origin()) {
@@ -316,7 +326,7 @@ struct TuiEvent<'a> {
     event: &'a crate::timeline::Event,
     width: Width,
     room_state: &'a crate::tui_app::RoomState,
-    selected: bool,
+    detailed: bool,
 }
 
 fn write_body<T: unsegen::base::CursorTarget>(c: &mut Cursor<T>, mut body: &str) {
@@ -707,7 +717,7 @@ impl TuiEvent<'_> {
                 let _ = write!(c, "\nReactions: ");
             }
             for (emoji, events) in reactions {
-                if self.selected {
+                if self.detailed {
                     let _ = write!(c, "\n");
                     for e in events {
                         write_user(c, &e.sender, self.room_state);

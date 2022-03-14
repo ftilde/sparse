@@ -123,6 +123,7 @@ impl Scrollable for RoomSelectionHistory {
 
 pub struct TuiState {
     pub room_selection: RoomSelectionHistory,
+    pub event_detail: EventDetail,
     mode_stack: Vec<Mode>, // Invariant: always at least one element
     room_filter_line: LineEdit,
     command_line: PromptLine,
@@ -172,6 +173,7 @@ impl TuiState {
     pub fn new(current_room: Option<&RoomId>) -> Self {
         let mut s = TuiState {
             room_selection: RoomSelectionHistory::default(),
+            event_detail: EventDetail::default(),
             mode_stack: vec![Mode::default()],
             room_filter_line: LineEdit::new(),
             command_line: PromptLine::with_prompt(":".to_owned()),
@@ -463,6 +465,42 @@ pub async fn run_tui(
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum EventDetail {
+    Full,
+    Selected,
+    Reduced,
+}
+
+impl std::default::Default for EventDetail {
+    fn default() -> Self {
+        EventDetail::Selected
+    }
+}
+
+impl FromStr for EventDetail {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(match value {
+            "full" => EventDetail::Full,
+            "selected" => EventDetail::Selected,
+            "reduced" => EventDetail::Reduced,
+            _ => return Err(()),
+        })
+    }
+}
+
+impl std::fmt::Display for EventDetail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            EventDetail::Full => "full",
+            EventDetail::Selected => "selected",
+            EventDetail::Reduced => "reduced",
+        };
+        write!(f, "{}", s)
+    }
+}
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub enum Mode {
     Builtin(BuiltinMode),

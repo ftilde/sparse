@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use rlua::{Lua, RegistryKey, UserData, UserDataMethods};
 
@@ -10,7 +12,7 @@ use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
 use cli_clipboard::ClipboardProvider;
 
 use super::super::State;
-use super::{BuiltinMode, SendMessageType, Tasks};
+use super::{BuiltinMode, EventDetail, SendMessageType, Tasks};
 use crate::config::Config;
 
 pub struct KeyAction<'a>(pub &'a RegistryKey);
@@ -437,6 +439,19 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
             }
         } else {
             ActionResult::Error("No current room".to_owned())
+        }
+    }),
+    ("set_event_detail", |c, s| {
+        if let Ok(detail) = EventDetail::from_str(&s) {
+            let current = &mut c.state.tui.event_detail;
+            if detail != *current {
+                *current = detail;
+                ActionResult::Ok
+            } else {
+                ActionResult::Noop
+            }
+        } else {
+            ActionResult::Error(format!("Invalid value for event detail: {}", s))
         }
     }),
     ("send_file", |c, path| {
