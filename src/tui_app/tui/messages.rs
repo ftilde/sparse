@@ -457,6 +457,7 @@ impl DrawEvent for SyncMessageEvent<RoomMessageEventContent> {
                 let _ = write!(c, "{:?}", e);
             }
             o => {
+                c.set_wrapping_mode(WrappingMode::Wrap);
                 let _ = write!(c, "Other message {:?}", o);
             }
         }
@@ -529,6 +530,7 @@ impl DrawEvent for AnySyncMessageEvent {
                     //Ignored
                 }
                 AnySyncMessageEvent::RoomRedaction(e) => {
+                    c.set_wrapping_mode(WrappingMode::Wrap);
                     let _ = write!(c, "Room Redaction {:?}", e);
                 }
                 AnySyncMessageEvent::Sticker(msg) => {
@@ -544,6 +546,7 @@ impl DrawEvent for AnySyncMessageEvent {
                     let _ = write!(c, "{:?}", e);
                 }
                 o => {
+                    c.set_wrapping_mode(WrappingMode::Wrap);
                     let _ = write!(c, "Other message event {:?}", o);
                 }
             }
@@ -685,30 +688,52 @@ impl DrawEvent for crate::tui_app::timeline::Event {
             crate::timeline::Event::Message(e) => e.draw(room_state, &mut c, simplified),
             crate::timeline::Event::State(e) => e.draw(room_state, &mut c, simplified),
             o => {
+                c.set_wrapping_mode(WrappingMode::Wrap);
                 let _ = write!(c, "Other event {:?}", o);
             }
         }
     }
 }
 
-impl TuiEvent<'_> {
-    fn write_time<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
-        use chrono::TimeZone;
-        let send_time_secs_unix = self.event.origin_server_ts().as_secs();
-        let send_time_naive =
-            chrono::naive::NaiveDateTime::from_timestamp(send_time_secs_unix.into(), 0);
-        let send_time = chrono::Local.from_utc_datetime(&send_time_naive);
-        let time_str = send_time.format("%m-%d %H:%M");
-        let _ = write!(c, "{} ", time_str);
-    }
+fn write_time<T: unsegen::base::CursorTarget>(c: &mut Cursor<T>, event: &crate::timeline::Event) {
+    use chrono::TimeZone;
+    let send_time_secs_unix = event.origin_server_ts().as_secs();
+    let send_time_naive =
+        chrono::naive::NaiveDateTime::from_timestamp(send_time_secs_unix.into(), 0);
+    let send_time = chrono::Local.from_utc_datetime(&send_time_naive);
+    let time_str = send_time.format("%m-%d %H:%M");
+    let _ = write!(c, "{} ", time_str);
+}
 
+impl TuiEvent<'_> {
     fn draw_with_cursor<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
-        self.write_time(c);
+        write_time(c, self.event);
 
         let start = c.get_col();
         c.set_line_start_column(start);
 
-        self.event.draw(self.room_state, c, false);
+        if let Some(replacements) = self.room_state.messages.edits(self.event.event_id()) {
+            assert!(!replacements.is_empty());
+            if self.detailed {
+                {
+                    let mut c = c.save().style_modifier().line_start_column();
+                    self.event.draw(self.room_state, &mut c, false);
+                }
+                for r in replacements {
+                    let mut c = c.save().style_modifier().line_start_column();
+                    c.wrap_line();
+                    write_time(&mut c, r);
+                    r.draw(self.room_state, &mut c, false);
+                }
+            } else {
+                replacements.last().unwrap().draw(self.room_state, c, false);
+                let mut c = c.save().style_modifier();
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                let _ = write!(c, " (edited)");
+            }
+        } else {
+            self.event.draw(self.room_state, c, false);
+        }
 
         if let Some(reactions) = self.room_state.messages.reactions(self.event.event_id()) {
             {

@@ -1,4 +1,5 @@
 use matrix_sdk::ruma::api::client::r0::message::get_message_events::{self, Direction};
+use matrix_sdk::ruma::events::room::encrypted::Relation;
 use matrix_sdk::{
     deserialized_responses::SyncRoomEvent,
     room::{Messages, Room},
@@ -26,6 +27,7 @@ pub struct RoomTimelineCache {
     begin_token: Option<String>,
     end_token: Option<String>,
     reactions: HashMap<Box<EventId>, Reactions>,
+    edits: HashMap<Box<EventId>, Vec<Event>>,
 }
 
 impl std::default::Default for RoomTimelineCache {
@@ -37,6 +39,7 @@ impl std::default::Default for RoomTimelineCache {
             begin_token: None,
             end_token: None,
             reactions: HashMap::new(),
+            edits: HashMap::new(),
         }
     }
 }
@@ -101,6 +104,10 @@ impl RoomTimelineCache {
         self.reactions.get(id)
     }
 
+    pub fn edits(&self, id: &EventId) -> Option<&Vec<Event>> {
+        self.edits.get(id)
+    }
+
     pub fn clear(&mut self) {
         self.messages.clear();
         self.begin = CacheEndState::Open;
@@ -119,6 +126,17 @@ impl RoomTimelineCache {
                     .or_default()
                     .push(r);
                 None
+            }
+            Event::Message(m) => {
+                if let Some(Relation::Replacement(r)) = m.content().relation() {
+                    self.edits
+                        .entry(r.event_id.clone())
+                        .or_default()
+                        .push(Event::Message(m));
+                    None
+                } else {
+                    Some(Event::Message(m))
+                }
             }
             o => Some(o),
         }
