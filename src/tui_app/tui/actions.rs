@@ -173,6 +173,18 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                             SendMessageType::Reply(orig_msg) => {
                                 RoomMessageEventContent::text_reply_plain(msg, &orig_msg)
                             }
+                            SendMessageType::Edit(orig_msg) => {
+                                let mut m = RoomMessageEventContent::text_plain(msg);
+                                m.relates_to = Some(
+                                    matrix_sdk::ruma::events::room::message::Relation::Replacement(
+                                        matrix_sdk::ruma::events::room::message::Replacement::new(
+                                            orig_msg.event_id.clone(),
+                                            Box::new(m.clone()),
+                                        ),
+                                    ),
+                                );
+                                m
+                            }
                         };
                         room.send(
                             matrix_sdk::ruma::events::AnyMessageEventContent::RoomMessage(content),
@@ -238,7 +250,6 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                         m
                     {
                         room.tui.msg_edit_type = super::SendMessageType::Reply(msg.clone());
-                        room.tui.selection = super::MessageSelection::Newest;
                         ActionResult::Ok
                     } else {
                         ActionResult::Error(
@@ -255,7 +266,32 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             ActionResult::Error("No current room".to_owned())
         }
     }),
-    ("cancel_reply", |c| {
+    ("start_edit", |c| {
+        if let Some(room) = c.state.current_room_state_mut() {
+            if let super::MessageSelection::Specific(eid) = &room.tui.selection {
+                if let Some(m) = room.messages.message_from_id(&eid) {
+                    if let crate::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(msg)) =
+                        m
+                    {
+                        room.tui.msg_edit_type = super::SendMessageType::Edit(msg.clone());
+                        room.tui
+                            .msg_edit
+                            .set(super::messages::strip_body(msg.content.body()));
+                        ActionResult::Ok
+                    } else {
+                        ActionResult::Error(format!("Only simple message events can be edited",))
+                    }
+                } else {
+                    ActionResult::Error(format!("Cannot find message with id {:?}", eid))
+                }
+            } else {
+                ActionResult::Error("No message selected".to_owned())
+            }
+        } else {
+            ActionResult::Error("No current room".to_owned())
+        }
+    }),
+    ("cancel_special_message", |c| {
         if let Some(room) = c.state.current_room_state_mut() {
             if !matches!(room.tui.msg_edit_type, super::SendMessageType::Simple) {
                 room.tui.msg_edit_type = super::SendMessageType::Simple;

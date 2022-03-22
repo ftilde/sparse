@@ -262,12 +262,26 @@ fn msg_edit<'a>(
     potentially_active: bool,
 ) -> impl Widget + 'a {
     let mut layout = VLayout::new();
-    if let SendMessageType::Reply(orig) = &room_state.tui.msg_edit_type {
-        layout = layout.widget(Foo(
-            ColDemand::at_least(1),
-            RowDemand::exact(1),
-            move |mut w, _| messages::draw_event_preview(orig, room_state, &mut w),
-        ));
+    match &room_state.tui.msg_edit_type {
+        SendMessageType::Reply(orig) => {
+            layout = layout.widget(Foo(
+                ColDemand::at_least(1),
+                RowDemand::exact(1),
+                move |mut w, _| {
+                    messages::draw_event_preview(messages::REPLY_PREFIX, orig, room_state, &mut w)
+                },
+            ));
+        }
+        SendMessageType::Edit(orig) => {
+            layout = layout.widget(Foo(
+                ColDemand::at_least(1),
+                RowDemand::exact(1),
+                move |mut w, _| {
+                    messages::draw_event_preview(messages::EDIT_PREFIX, orig, room_state, &mut w)
+                },
+            ));
+        }
+        &SendMessageType::Simple => {}
     }
     layout.widget(
         HLayout::new().widget("> ").widget(
@@ -337,6 +351,7 @@ pub enum Event {
 pub enum SendMessageType {
     Simple,
     Reply(SyncMessageEvent<RoomMessageEventContent>),
+    Edit(SyncMessageEvent<RoomMessageEventContent>),
 }
 
 #[derive(Clone)]

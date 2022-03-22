@@ -27,6 +27,8 @@ macro_rules! message_fetch_symbol {
         "[...]"
     };
 }
+pub const REPLY_PREFIX: &str = "┏➤ ";
+pub const EDIT_PREFIX: &str = "Editing: ";
 
 pub struct MessagesMut<'a>(pub &'a mut State);
 
@@ -329,18 +331,18 @@ struct TuiEvent<'a> {
     detailed: bool,
 }
 
-fn write_body<T: unsegen::base::CursorTarget>(c: &mut Cursor<T>, mut body: &str) {
+pub fn strip_body(mut body: &str) -> &str {
     while let [b'>', b' ', ..] = body.as_bytes() {
         if let Some(e) = body.find('\n') {
             body = &body[e + 1..];
         } else {
-            return;
+            return "";
         }
     }
     if let [b'\n', ..] = body.as_bytes() {
         body = &body[1..];
     }
-    c.write(body);
+    body
 }
 
 fn write_user<T: unsegen::base::CursorTarget>(
@@ -358,13 +360,14 @@ fn write_user<T: unsegen::base::CursorTarget>(
 }
 
 pub fn draw_event_preview<T: unsegen::base::CursorTarget, D: DrawEvent>(
+    prefix: &str,
     event: &D,
     room_state: &crate::tui_app::RoomState,
     target: &mut T,
 ) {
     let w = target.get_width();
     let mut c = Cursor::<T>::new(target);
-    c.write("┏➤ ");
+    c.write(prefix);
     event.draw(room_state, &mut c, true);
     if c.get_row() != 0 || c.get_col() >= w.from_origin() {
         c = c.position((w - 3).from_origin(), AxisIndex::new(0));
@@ -393,7 +396,7 @@ impl DrawEvent for SyncMessageEvent<RoomMessageEventContent> {
                 if let Some(rel) = room_state.messages.message_from_id(&rel.event_id) {
                     let mut l =
                         StyledLine::new(c.target().get_width(), c.target().get_default_style());
-                    draw_event_preview(rel, room_state, &mut l);
+                    draw_event_preview(REPLY_PREFIX, rel, room_state, &mut l);
                     c.write_preformatted(l.content.as_slice());
                     c.wrap_line();
                 }
@@ -406,7 +409,7 @@ impl DrawEvent for SyncMessageEvent<RoomMessageEventContent> {
                 let _ = write!(c, ": ");
                 let start = c.get_col();
                 c.set_line_start_column(start);
-                write_body(c, &text.body);
+                c.write(strip_body(&text.body));
             }
             MessageType::Image(img) => {
                 c.set_style_modifier(StyleModifier::new().italic(true));
