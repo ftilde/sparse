@@ -11,10 +11,10 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+debug = 1
 
 
 [dependencies]
-
 tokio = { version = "1.6.0", features = ["full", "rt-multi-thread"] }
 url = "2.2.0"
 chrono = "0.4"
