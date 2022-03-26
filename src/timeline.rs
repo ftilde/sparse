@@ -21,38 +21,44 @@ pub enum CacheEndState {
 }
 
 pub struct RoomTimelineCache {
+    message_index_offset: isize,
     messages: VecDeque<Event>,
+    index: HashMap<Box<EventId>, RoomTimelineIndex>,
     pub begin: CacheEndState,
     pub end: CacheEndState,
     begin_token: Option<String>,
     end_token: Option<String>,
     reactions: HashMap<Box<EventId>, Reactions>,
-    edits: HashMap<Box<EventId>, Vec<Event>>,
+    msg_to_edits: HashMap<Box<EventId>, Vec<Event>>,
+    edits_to_original: HashMap<Box<EventId>, Box<EventId>>,
 }
 
 impl std::default::Default for RoomTimelineCache {
     fn default() -> Self {
         RoomTimelineCache {
+            message_index_offset: 0,
             messages: VecDeque::new(),
+            index: HashMap::new(),
             begin: CacheEndState::Open,
             end: CacheEndState::Open,
             begin_token: None,
             end_token: None,
             reactions: HashMap::new(),
-            edits: HashMap::new(),
+            msg_to_edits: HashMap::new(),
+            edits_to_original: HashMap::new(),
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub enum EventWalkResult<'a> {
-    Message(RoomTimelineIndex<'a>),
+pub enum EventWalkResult {
+    Message(RoomTimelineIndex),
     RequiresFetch,
     End,
 }
 
-impl<'a> EventWalkResult<'a> {
-    pub fn message(&self) -> Option<RoomTimelineIndex<'a>> {
+impl EventWalkResult {
+    pub fn message(&self) -> Option<RoomTimelineIndex> {
         if let EventWalkResult::Message(m) = self {
             Some(*m)
         } else {
@@ -62,14 +68,14 @@ impl<'a> EventWalkResult<'a> {
 }
 
 #[derive(Debug)]
-pub enum EventWalkResultNewest<'a> {
-    Message(RoomTimelineIndex<'a>),
-    RequiresFetch(Option<RoomTimelineIndex<'a>>), //There may be newer events, but this is the newest we got
+pub enum EventWalkResultNewest {
+    Message(RoomTimelineIndex),
+    RequiresFetch(Option<RoomTimelineIndex>), //There may be newer events, but this is the newest we got
     End,
 }
 
-impl<'a> EventWalkResultNewest<'a> {
-    pub fn message(&self) -> Option<RoomTimelineIndex<'a>> {
+impl EventWalkResultNewest {
+    pub fn message(&self) -> Option<RoomTimelineIndex> {
         if let EventWalkResultNewest::Message(m) = self {
             Some(*m)
         } else {
@@ -78,20 +84,46 @@ impl<'a> EventWalkResultNewest<'a> {
     }
 }
 
+#[derive(Copy, Clone)]
+pub enum TimelineEntry<'a> {
+    Simple(&'a Event),
+    Deleted(&'a Event),
+    Edited {
+        original: &'a Event,
+        versions: &'a Vec<Event>,
+    },
+}
+
+impl<'a> TimelineEntry<'a> {
+    pub fn latest(self) -> Option<&'a Event> {
+        match self {
+            TimelineEntry::Simple(e) => Some(e),
+            TimelineEntry::Deleted(_) => None,
+            TimelineEntry::Edited { versions, .. } => Some(versions.last().unwrap()),
+        }
+    }
+    pub fn original(self) -> &'a Event {
+        match self {
+            TimelineEntry::Simple(e) => e,
+            TimelineEntry::Deleted(e) => e,
+            TimelineEntry::Edited { original, .. } => original,
+        }
+    }
+    pub fn event_id(self) -> &'a EventId {
+        self.original().event_id()
+    }
+}
+
 const QUERY_BATCH_SIZE_LIMIT: u32 = 10;
 
 #[derive(Copy, Clone, Debug)]
-pub struct RoomTimelineIndex<'a> {
-    pos: usize,
-    _marker: std::marker::PhantomData<&'a ()>,
+pub struct RoomTimelineIndex {
+    pos: isize,
 }
 
-impl RoomTimelineIndex<'_> {
-    fn new(pos: usize) -> Self {
-        RoomTimelineIndex {
-            pos,
-            _marker: std::marker::PhantomData::default(),
-        }
+impl RoomTimelineIndex {
+    fn new(pos: isize) -> Self {
+        RoomTimelineIndex { pos }
     }
 }
 
@@ -104,12 +136,17 @@ impl RoomTimelineCache {
         self.reactions.get(id)
     }
 
-    pub fn edits(&self, id: &EventId) -> Option<&Vec<Event>> {
-        self.edits.get(id)
+    fn clear_timeline(&mut self) {
+        self.messages.clear();
+        self.message_index_offset = 0;
+        self.index.clear();
+        self.msg_to_edits.clear();
+        self.edits_to_original.clear();
+        self.reactions.clear();
     }
 
     pub fn clear(&mut self) {
-        self.messages.clear();
+        self.clear_timeline();
         self.begin = CacheEndState::Open;
         self.end = CacheEndState::Open;
         self.begin_token = None;
@@ -129,7 +166,9 @@ impl RoomTimelineCache {
             }
             Event::Message(m) => {
                 if let Some(Relation::Replacement(r)) = m.content().relation() {
-                    self.edits
+                    self.edits_to_original
+                        .insert(m.event_id().to_owned(), r.event_id.clone());
+                    self.msg_to_edits
                         .entry(r.event_id.clone())
                         .or_default()
                         .push(Event::Message(m));
@@ -142,36 +181,77 @@ impl RoomTimelineCache {
         }
     }
 
+    fn buffer_index_to_message_index(&self, id: usize) -> RoomTimelineIndex {
+        RoomTimelineIndex {
+            pos: id as isize - self.message_index_offset,
+        }
+    }
+
+    fn message_index_to_buffer_index(&self, id: RoomTimelineIndex) -> usize {
+        let index = id.pos + self.message_index_offset;
+        assert!(index >= 0);
+        index as usize
+    }
+
     fn append(&mut self, msg: Event) {
         if let Some(msg) = self.pre_process_message(msg) {
-            self.messages.push_back(msg)
+            let id = self.buffer_index_to_message_index(self.messages.len());
+            self.index.insert(msg.event_id().to_owned(), id);
+            self.messages.push_back(msg);
         }
     }
     fn prepend(&mut self, msg: Event) {
         if let Some(msg) = self.pre_process_message(msg) {
+            self.message_index_offset += 1;
+
+            let id = self.buffer_index_to_message_index(0);
+            self.index.insert(msg.event_id().to_owned(), id);
             self.messages.push_front(msg)
         }
     }
 
-    pub fn message(&self, id: RoomTimelineIndex) -> &Event {
-        &self.messages[id.pos]
+    fn entry_from_event<'a>(&'a self, original: &'a Event) -> TimelineEntry<'a> {
+        if let Some(e) = self.msg_to_edits.get(original.event_id()) {
+            TimelineEntry::Edited {
+                original,
+                versions: e,
+            }
+        } else {
+            TimelineEntry::Simple(original)
+        }
     }
 
-    fn find(&self, id: &EventId) -> Option<(usize, &Event)> {
-        // TODO: We might want to store an index to speed this operation up if it's too slow
-        self.messages
-            .iter()
-            .enumerate()
-            .find(|(_, m)| *m.event_id() == *id)
+    fn event_at(&self, id: RoomTimelineIndex) -> &Event {
+        let index = self.message_index_to_buffer_index(id);
+        &self.messages[index]
     }
 
-    pub fn message_from_id(&self, id: &EventId) -> Option<&Event> {
-        self.find(id).map(|(_, e)| e)
+    pub fn message(&self, id: RoomTimelineIndex) -> TimelineEntry {
+        let original = self.event_at(id);
+        self.entry_from_event(original)
+    }
+
+    fn find(&self, id: &EventId) -> Option<RoomTimelineIndex> {
+        let orig_id = self
+            .edits_to_original
+            .get(id)
+            .map(|e| e.as_ref())
+            .unwrap_or(id);
+        self.index.get(orig_id).map(|i| *i)
+    }
+
+    pub fn original_message(&self, id: &EventId) -> Option<&Event> {
+        self.find(id).map(|i| self.event_at(i))
+    }
+
+    pub fn message_from_id(&self, id: &EventId) -> Option<TimelineEntry> {
+        self.find(id)
+            .map(|i| self.entry_from_event(self.event_at(i)))
     }
 
     pub fn walk_from_known(&self, id: &EventId) -> EventWalkResult {
-        if let Some((i, _)) = self.find(id) {
-            EventWalkResult::Message(RoomTimelineIndex::new(i))
+        if let Some(i) = self.find(id) {
+            EventWalkResult::Message(i)
         } else {
             EventWalkResult::RequiresFetch
         }
@@ -181,24 +261,27 @@ impl RoomTimelineCache {
         match self.end {
             CacheEndState::Reached => {
                 if !self.messages.is_empty() {
-                    EventWalkResultNewest::Message(RoomTimelineIndex::new(self.messages.len() - 1))
+                    EventWalkResultNewest::Message(
+                        self.buffer_index_to_message_index(self.messages.len() - 1),
+                    )
                 } else {
                     EventWalkResultNewest::End
                 }
             }
             CacheEndState::Open => EventWalkResultNewest::RequiresFetch(
-                self.messages
-                    .len()
-                    .checked_sub(1)
-                    .map(RoomTimelineIndex::new),
+                if let Some(i) = self.messages.len().checked_sub(1) {
+                    Some(self.buffer_index_to_message_index(i))
+                } else {
+                    None
+                },
             ),
         }
     }
 
-    pub fn next<'a>(&'a self, pos: RoomTimelineIndex<'a>) -> EventWalkResult<'a> {
-        let new_pos = pos.pos + 1;
-        if new_pos < self.messages.len() {
-            EventWalkResult::Message(RoomTimelineIndex::new(new_pos))
+    pub fn next<'a>(&'a self, pos: RoomTimelineIndex) -> EventWalkResult {
+        let new_pos = RoomTimelineIndex::new(pos.pos + 1);
+        if self.message_index_to_buffer_index(new_pos) < self.messages.len() {
+            EventWalkResult::Message(new_pos)
         } else {
             match self.end {
                 CacheEndState::Reached => EventWalkResult::End,
@@ -206,8 +289,8 @@ impl RoomTimelineCache {
             }
         }
     }
-    pub fn previous<'a>(&'a self, pos: RoomTimelineIndex<'a>) -> EventWalkResult<'a> {
-        if pos.pos > 0 {
+    pub fn previous<'a>(&'a self, pos: RoomTimelineIndex) -> EventWalkResult {
+        if pos.pos + self.message_index_offset > 0 {
             EventWalkResult::Message(RoomTimelineIndex::new(pos.pos - 1))
         } else {
             match self.begin {
@@ -297,7 +380,7 @@ impl RoomTimelineCache {
                     // cache is invalid now. :(
                     self.begin_token = Some(batch.end.unwrap());
                     self.begin = CacheEndState::Open;
-                    self.messages.clear();
+                    self.clear_timeline();
                 }
                 self.end_token = Some(batch.start.unwrap());
                 self.end = CacheEndState::Reached;
@@ -318,7 +401,7 @@ impl RoomTimelineCache {
             let events = batch.events.into_iter();
 
             if batch.limited {
-                self.messages.clear();
+                self.clear_timeline();
                 if let Some(token) = batch.prev_batch {
                     self.begin_token = Some(token);
                     self.begin = CacheEndState::Open;

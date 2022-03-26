@@ -14,6 +14,7 @@ use cli_clipboard::ClipboardProvider;
 use super::super::State;
 use super::{BuiltinMode, EventDetail, SendMessageType, Tasks};
 use crate::config::Config;
+use crate::timeline::Event;
 
 pub struct KeyAction<'a>(pub &'a RegistryKey);
 
@@ -83,7 +84,7 @@ impl UserData for &mut CommandContext<'_> {
                     super::MessageSelection::Specific(eid) => {
                         if let Some(crate::timeline::Event::Message(
                             AnySyncMessageEvent::RoomMessage(msg),
-                        )) = r.messages.message_from_id(&eid)
+                        )) = r.messages.message_from_id(&eid).and_then(|m| m.latest())
                         {
                             Ok(msg.content.body().to_owned())
                         } else {
@@ -166,32 +167,41 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                 room.tui.msg_edit.clear().unwrap();
                 let mut tmp_type = SendMessageType::Simple;
                 std::mem::swap(&mut tmp_type, &mut room.tui.msg_edit_type);
-                if let Some(room) = c.client.get_joined_room(&room.id) {
-                    tokio::spawn(async move {
-                        let content = match tmp_type {
-                            SendMessageType::Simple => RoomMessageEventContent::text_plain(msg),
-                            SendMessageType::Reply(orig_msg) => {
-                                RoomMessageEventContent::text_reply_plain(msg, &orig_msg)
-                            }
-                            SendMessageType::Edit(orig_msg) => {
-                                let mut m = RoomMessageEventContent::text_plain(msg);
-                                m.relates_to = Some(
-                                    matrix_sdk::ruma::events::room::message::Relation::Replacement(
-                                        matrix_sdk::ruma::events::room::message::Replacement::new(
-                                            orig_msg.event_id.clone(),
-                                            Box::new(m.clone()),
-                                        ),
+                if let Some(m_room) = c.client.get_joined_room(&room.id) {
+                    let content = match tmp_type {
+                        SendMessageType::Simple => RoomMessageEventContent::text_plain(msg),
+                        SendMessageType::Reply(original_message) => {
+                            RoomMessageEventContent::text_reply_plain(msg, &original_message)
+                        }
+                        SendMessageType::Edit(prev_msg) => {
+                            let prev_id = room
+                                .messages
+                                .original_message(&*prev_msg.event_id)
+                                .map(|e| e.event_id())
+                                .unwrap_or(&*prev_msg.event_id)
+                                .to_owned();
+                            let mut m = RoomMessageEventContent::text_plain(msg);
+                            m.relates_to = Some(
+                                matrix_sdk::ruma::events::room::message::Relation::Replacement(
+                                    matrix_sdk::ruma::events::room::message::Replacement::new(
+                                        prev_id,
+                                        Box::new(m.clone()),
                                     ),
-                                );
-                                m
-                            }
-                        };
-                        room.send(
-                            matrix_sdk::ruma::events::AnyMessageEventContent::RoomMessage(content),
-                            None,
-                        )
-                        .await
-                        .unwrap();
+                                ),
+                            );
+                            m
+                        }
+                    };
+                    tokio::spawn(async move {
+                        m_room
+                            .send(
+                                matrix_sdk::ruma::events::AnyMessageEventContent::RoomMessage(
+                                    content,
+                                ),
+                                None,
+                            )
+                            .await
+                            .unwrap();
                     });
                 } else {
                     tracing::error!("can't send message, no joined room");
@@ -246,10 +256,10 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
         if let Some(room) = c.state.current_room_state_mut() {
             if let super::MessageSelection::Specific(eid) = &room.tui.selection {
                 if let Some(m) = room.messages.message_from_id(&eid) {
-                    if let crate::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(msg)) =
-                        m
+                    if let Some(Event::Message(AnySyncMessageEvent::RoomMessage(message))) =
+                        m.latest()
                     {
-                        room.tui.msg_edit_type = super::SendMessageType::Reply(msg.clone());
+                        room.tui.msg_edit_type = super::SendMessageType::Reply(message.clone());
                         ActionResult::Ok
                     } else {
                         ActionResult::Error(
@@ -270,13 +280,14 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
         if let Some(room) = c.state.current_room_state_mut() {
             if let super::MessageSelection::Specific(eid) = &room.tui.selection {
                 if let Some(m) = room.messages.message_from_id(&eid) {
-                    if let crate::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(msg)) =
-                        m
+                    if let Some(crate::timeline::Event::Message(
+                        AnySyncMessageEvent::RoomMessage(latest),
+                    )) = m.latest()
                     {
-                        room.tui.msg_edit_type = super::SendMessageType::Edit(msg.clone());
+                        room.tui.msg_edit_type = super::SendMessageType::Edit(latest.clone());
                         room.tui
                             .msg_edit
-                            .set(super::messages::strip_body(msg.content.body()));
+                            .set(super::messages::strip_body(latest.content.body()));
                         ActionResult::Ok
                     } else {
                         ActionResult::Error(format!("Only simple message events can be edited",))
@@ -327,7 +338,7 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                 super::MessageSelection::Specific(eid) => {
                     if let Some(crate::timeline::Event::Message(
                         AnySyncMessageEvent::RoomMessage(msg),
-                    )) = r.messages.message_from_id(&eid)
+                    )) = r.messages.message_from_id(&eid).and_then(|m| m.latest())
                     {
                         match &msg.content.msgtype {
                             MessageType::Text(t) => {
@@ -527,7 +538,7 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
                 super::MessageSelection::Specific(eid) => {
                     if let Some(crate::timeline::Event::Message(
                         AnySyncMessageEvent::RoomMessage(msg),
-                    )) = r.messages.message_from_id(&eid)
+                    )) = r.messages.message_from_id(&eid).and_then(|m| m.latest())
                     {
                         match &msg.content.msgtype {
                             MessageType::Image(f) => save_file(c.client.clone(), f.clone(), &path),

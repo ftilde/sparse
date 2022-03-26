@@ -263,21 +263,26 @@ fn msg_edit<'a>(
 ) -> impl Widget + 'a {
     let mut layout = VLayout::new();
     match &room_state.tui.msg_edit_type {
-        SendMessageType::Reply(orig) => {
+        SendMessageType::Reply(display_message) => {
             layout = layout.widget(Foo(
                 ColDemand::at_least(1),
                 RowDemand::exact(1),
                 move |mut w, _| {
-                    messages::draw_event_preview(messages::REPLY_PREFIX, orig, room_state, &mut w)
+                    messages::draw_event_preview(
+                        messages::REPLY_PREFIX,
+                        display_message,
+                        room_state,
+                        &mut w,
+                    )
                 },
             ));
         }
-        SendMessageType::Edit(orig) => {
+        SendMessageType::Edit(content) => {
             layout = layout.widget(Foo(
                 ColDemand::at_least(1),
                 RowDemand::exact(1),
                 move |mut w, _| {
-                    messages::draw_event_preview(messages::EDIT_PREFIX, orig, room_state, &mut w)
+                    messages::draw_event_preview(messages::EDIT_PREFIX, content, room_state, &mut w)
                 },
             ));
         }

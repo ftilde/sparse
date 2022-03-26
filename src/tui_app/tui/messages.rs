@@ -5,7 +5,7 @@ use unsegen::base::*;
 use unsegen::input::{OperationResult, Scrollable};
 use unsegen::widget::*;
 
-use crate::timeline::{EventWalkResult, EventWalkResultNewest, MessageQuery};
+use crate::timeline::{EventWalkResult, EventWalkResultNewest, MessageQuery, TimelineEntry};
 use crate::tui_app::State;
 
 use crate::tui_app::tui::{MessageSelection, Tasks};
@@ -92,7 +92,7 @@ impl Messages<'_> {
         &self,
         mut window: Window,
         hints: RenderingHints,
-        mut msg: EventWalkResult<'b>,
+        mut msg: EventWalkResult,
         room: &RoomId,
         state: &'b crate::tui_app::RoomState,
     ) {
@@ -325,7 +325,7 @@ impl CursorTarget for StyledLine {
 }
 
 struct TuiEvent<'a> {
-    event: &'a crate::timeline::Event,
+    event: crate::timeline::TimelineEntry<'a>,
     width: Width,
     room_state: &'a crate::tui_app::RoomState,
     detailed: bool,
@@ -392,13 +392,17 @@ impl DrawEvent for SyncMessageEvent<RoomMessageEventContent> {
         simplified: bool,
     ) {
         if !simplified {
-            if let Some(Relation::Reply { in_reply_to: rel }) = &self.content.relates_to {
-                if let Some(rel) = room_state.messages.message_from_id(&rel.event_id) {
-                    let mut l =
-                        StyledLine::new(c.target().get_width(), c.target().get_default_style());
-                    draw_event_preview(REPLY_PREFIX, rel, room_state, &mut l);
-                    c.write_preformatted(l.content.as_slice());
-                    c.wrap_line();
+            if let Some(crate::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(m))) =
+                room_state.messages.original_message(&self.event_id)
+            {
+                if let Some(Relation::Reply { in_reply_to: rel }) = &m.content.relates_to {
+                    if let Some(rel) = room_state.messages.message_from_id(&rel.event_id) {
+                        let mut l =
+                            StyledLine::new(c.target().get_width(), c.target().get_default_style());
+                        draw_event_preview(REPLY_PREFIX, &rel, room_state, &mut l);
+                        c.write_preformatted(l.content.as_slice());
+                        c.wrap_line();
+                    }
                 }
             }
         }
@@ -698,6 +702,67 @@ impl DrawEvent for crate::tui_app::timeline::Event {
     }
 }
 
+struct Detailed<'a>(TimelineEntry<'a>);
+
+impl DrawEvent for Detailed<'_> {
+    fn draw<T: unsegen::base::CursorTarget>(
+        &self,
+        room_state: &crate::tui_app::RoomState,
+        c: &mut Cursor<T>,
+        simplified: bool,
+    ) {
+        match self.0 {
+            TimelineEntry::Simple(m) => {
+                m.draw(room_state, c, simplified);
+            }
+            TimelineEntry::Deleted(m) => {
+                m.draw(room_state, c, simplified);
+                let mut c = c.save().style_modifier();
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                c.write(" (deleted)");
+            }
+            TimelineEntry::Edited { original, versions } => {
+                {
+                    let mut c = c.save().style_modifier().line_start_column();
+                    original.draw(room_state, &mut c, simplified);
+                }
+                for r in versions {
+                    let mut c = c.save().style_modifier().line_start_column();
+                    c.wrap_line();
+                    write_time(&mut c, &r);
+                    r.draw(room_state, &mut c, true);
+                }
+            }
+        }
+    }
+}
+
+impl DrawEvent for TimelineEntry<'_> {
+    fn draw<T: unsegen::base::CursorTarget>(
+        &self,
+        room_state: &crate::tui_app::RoomState,
+        c: &mut Cursor<T>,
+        simplified: bool,
+    ) {
+        match self {
+            TimelineEntry::Simple(m) => {
+                m.draw(room_state, c, simplified);
+            }
+            TimelineEntry::Deleted(_m) => {
+                let mut c = c.save().style_modifier();
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                c.write("deleted message");
+            }
+            TimelineEntry::Edited { versions, .. } => {
+                versions.last().unwrap().draw(room_state, c, simplified);
+                let mut c = c.save().style_modifier();
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                c.write(" (edited)");
+            }
+        }
+    }
+}
+
 fn write_time<T: unsegen::base::CursorTarget>(c: &mut Cursor<T>, event: &crate::timeline::Event) {
     use chrono::TimeZone;
     let send_time_secs_unix = event.origin_server_ts().as_secs();
@@ -710,30 +775,13 @@ fn write_time<T: unsegen::base::CursorTarget>(c: &mut Cursor<T>, event: &crate::
 
 impl TuiEvent<'_> {
     fn draw_with_cursor<T: unsegen::base::CursorTarget>(&self, c: &mut Cursor<T>) {
-        write_time(c, self.event);
+        write_time(c, self.event.original());
 
         let start = c.get_col();
         c.set_line_start_column(start);
 
-        if let Some(replacements) = self.room_state.messages.edits(self.event.event_id()) {
-            assert!(!replacements.is_empty());
-            if self.detailed {
-                {
-                    let mut c = c.save().style_modifier().line_start_column();
-                    self.event.draw(self.room_state, &mut c, false);
-                }
-                for r in replacements {
-                    let mut c = c.save().style_modifier().line_start_column();
-                    c.wrap_line();
-                    write_time(&mut c, r);
-                    r.draw(self.room_state, &mut c, false);
-                }
-            } else {
-                replacements.last().unwrap().draw(self.room_state, c, false);
-                let mut c = c.save().style_modifier();
-                c.set_style_modifier(StyleModifier::new().italic(true));
-                let _ = write!(c, " (edited)");
-            }
+        if self.detailed {
+            Detailed(self.event).draw(self.room_state, c, false);
         } else {
             self.event.draw(self.room_state, c, false);
         }
