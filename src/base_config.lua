@@ -122,3 +122,5 @@ bind('y', 'visual', function(c)
     return res_ok()
 end)
 
+e = clear_timeline_cache
+q = quit

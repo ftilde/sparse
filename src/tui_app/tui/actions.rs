@@ -413,6 +413,14 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
         Ok(()) => ActionResult::Ok,
         Err(()) => ActionResult::Error("Cannot pop last element from mode stack.".to_owned()),
     }),
+    ("clear_timeline_cache", |c| {
+        if let Some(r) = c.state.current_room_state_mut() {
+            r.messages.clear();
+            ActionResult::Ok
+        } else {
+            ActionResult::Error("No current room".to_owned())
+        }
+    }),
 ];
 
 pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
