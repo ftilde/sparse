@@ -255,8 +255,16 @@ impl Messages<'_> {
                 EventWalkResult::RequiresFetch => {
                     let mut c = Cursor::new(&mut window);
                     write!(&mut c, message_fetch_symbol!()).unwrap();
-                    self.1
-                        .set_message_query(room.to_owned(), MessageQuery::AfterCache);
+                    // The normal assumption is that the new messages are below the current cache
+                    // (we are drawing from top to bottom), but if we have reached the "new-end" of
+                    // the timeline, this means that the messages we are searching for are actually
+                    // before the cache.
+                    let query = if state.messages.reached_newest() {
+                        MessageQuery::BeforeCache
+                    } else {
+                        MessageQuery::AfterCache
+                    };
+                    self.1.set_message_query(room.to_owned(), query);
                     break;
                 }
             };

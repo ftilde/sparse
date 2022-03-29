@@ -418,6 +418,10 @@ impl RoomTimelineCache {
             }
         }
     }
+
+    pub fn reached_newest(&self) -> bool {
+        matches!(self.end, CacheEndState::Reached)
+    }
 }
 
 fn transform_events(i: impl Iterator<Item = SyncRoomEvent>) -> impl Iterator<Item = Event> {
