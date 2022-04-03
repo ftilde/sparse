@@ -3600,7 +3600,7 @@ dependencies = [
 [[package]]
 name = "unsegen"
 version = "0.3.0"
-source = "git+https://github.com/ftilde/unsegen#3dd30398e81601ccd29a707d3658926085158958"
+source = "git+https://github.com/ftilde/unsegen#7f85f1c58433cd4b2535839b25aef355a4dc7bbc"
 dependencies = [
  "ndarray",
  "nix 0.17.0",

@@ -336,6 +336,22 @@ pub struct ConfigBuilder {
     modes: ModeSet,
 }
 
+fn add_global_fun(context: &rlua::Context, name: &str, nargs: usize) -> rlua::Result<()> {
+    let mut arg_str = String::with_capacity(3 * nargs);
+    for i in 0..nargs {
+        use std::fmt::Write;
+        let _ = write!(arg_str, "s{},", i);
+    }
+    arg_str.pop();
+    context
+        .load(&format!(
+            "{f} = function({args}) return function(c) return c:{f}({args}) end end",
+            f = name,
+            args = arg_str
+        ))
+        .eval()
+}
+
 impl ConfigBuilder {
     pub fn new() -> ConfigBuilder {
         ConfigBuilder {
@@ -509,13 +525,10 @@ impl ConfigBuilder {
                 }
 
                 for (n, _) in ACTIONS_ARGS_STRING {
-                    lua_ctx
-                        .load(&format!(
-                            "{f} = function(s) return function(c) return c:{f}(s) end end",
-                            f = n
-                        ))
-                        .eval()?;
+                    add_global_fun(&lua_ctx, n, 1)?;
                 }
+                add_global_fun(&lua_ctx, "cursor_move_forward", 1)?;
+                add_global_fun(&lua_ctx, "cursor_move_backward", 1)?;
 
                 lua_ctx.load(source).eval()?;
                 Ok(())

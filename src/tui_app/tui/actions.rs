@@ -1,11 +1,11 @@
 use std::str::FromStr;
 
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
-use rlua::{Lua, RegistryKey, UserData, UserDataMethods};
+use rlua::{Lua, RegistryKey, UserData, UserDataMethods, Value};
 
 use matrix_sdk::Client;
 use unsegen::input::{Editable, Navigatable, OperationResult, Scrollable, Writable};
-use unsegen::widget::builtin::TextEdit;
+use unsegen::widget::builtin::{TextEdit, TextElement, TextTarget};
 
 use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
 
@@ -98,6 +98,48 @@ impl UserData for &mut CommandContext<'_> {
                 Err(rlua::Error::RuntimeError("No current room".to_owned()))
             }
         });
+
+        methods.add_method_mut(
+            "cursor_move_forward",
+            move |_, this, element: LuaTextElement| {
+                let target = TextTarget::forward(element.0);
+                Ok(with_msg_edit(this, |e| e.move_cursor_to(target)))
+            },
+        );
+
+        methods.add_method_mut(
+            "cursor_move_backward",
+            move |_, this, element: LuaTextElement| {
+                let target = TextTarget::backward(element.0);
+                Ok(with_msg_edit(this, |e| e.move_cursor_to(target)))
+            },
+        );
+    }
+}
+
+struct LuaTextElement(TextElement);
+
+impl rlua::FromLua<'_> for LuaTextElement {
+    fn from_lua(lua_value: Value<'_>, _lua: rlua::Context<'_>) -> rlua::Result<Self> {
+        if let Value::String(s) = lua_value {
+            Ok(LuaTextElement(match s.to_str()? {
+                "word_begin" => TextElement::WordBegin,
+                "word_end" => TextElement::WordEnd,
+                "line_separator" => TextElement::LineSeparator,
+                "document_boundary" => TextElement::LineSeparator,
+                "cell" => TextElement::GraphemeCluster,
+                "sentence" => TextElement::Sentence,
+                o => Err(rlua::Error::RuntimeError(format!(
+                    "'{}' is not a text element",
+                    o
+                )))?,
+            }))
+        } else {
+            Err(rlua::Error::RuntimeError(format!(
+                "'{:?}' is not a text element",
+                lua_value
+            )))
+        }
     }
 }
 
@@ -162,7 +204,7 @@ pub type ActionArgsString = fn(&mut CommandContext, String) -> ActionResult;
 pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     ("send_message", |c| {
         if let Some(room) = c.state.current_room_state_mut() {
-            let msg = room.tui.msg_edit.get().to_owned();
+            let msg = room.tui.msg_edit.get(..).to_owned();
             if !msg.is_empty() {
                 room.tui.msg_edit.clear().unwrap();
                 let mut tmp_type = SendMessageType::Simple;
@@ -380,10 +422,6 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             ActionResult::Error("No current room".to_owned())
         }
     }),
-    ("cursor_move_left", |c| with_msg_edit(c, |e| e.move_left())),
-    ("cursor_move_right", |c| {
-        with_msg_edit(c, |e| e.move_right())
-    }),
     ("cursor_move_down", |c| with_msg_edit(c, |e| e.move_down())),
     ("cursor_move_up", |c| with_msg_edit(c, |e| e.move_up())),
     ("cursor_delete_left", |c| {
@@ -391,12 +429,6 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     }),
     ("cursor_delete_right", |c| {
         with_msg_edit(c, |e| e.delete_forwards())
-    }),
-    ("cursor_move_beginning_of_line", |c| {
-        with_msg_edit(c, |e| e.go_to_beginning_of_line())
-    }),
-    ("cursor_move_end_of_line", |c| {
-        with_msg_edit(c, |e| e.go_to_end_of_line())
     }),
     ("run_command", |c| {
         if !c.state.tui.command_line.get().is_empty() {
