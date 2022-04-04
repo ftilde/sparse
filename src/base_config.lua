@@ -63,6 +63,9 @@ bind('<C-o>', 'normal', select_room_history_prev)
 bind('<C-c>', 'normal', clear_message)
 bind('<Return>', 'normal', send_message)
 
+bind('x', 'normal', cursor_delete_right)
+bind('X', 'normal', cursor_delete_left)
+
 -- Movement
 bind('k', 'normal', cursor_move_up)
 bind('j', 'normal', cursor_move_down)
