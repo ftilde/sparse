@@ -1,3 +1,4 @@
+use std::ops::Bound;
 use std::str::FromStr;
 
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
@@ -114,6 +115,55 @@ impl UserData for &mut CommandContext<'_> {
                 Ok(with_msg_edit(this, |e| e.move_cursor_to(target)))
             },
         );
+
+        methods.add_method_mut(
+            "cursor_delete",
+            move |_, this, range: (LuaTextElement, LuaTextElement)| {
+                let range = build_target_range(range);
+                Ok(with_msg_edit(this, |e| {
+                    e.delete(range);
+                    Ok(())
+                }))
+            },
+        );
+
+        methods.add_method_mut(
+            "cursor_yank",
+            move |_, this, range: (LuaTextElement, LuaTextElement)| {
+                let range = build_target_range(range);
+                if let Some(room) = this.state.current_room_state_mut() {
+                    let e = &mut room.tui.msg_edit;
+                    let content = e.get(range);
+                    Ok(content)
+                } else {
+                    Err(rlua::Error::RuntimeError("No current room".to_owned()))
+                }
+            },
+        );
+    }
+}
+
+fn build_target_range(
+    range: (LuaTextElement, LuaTextElement),
+) -> (Bound<TextTarget>, Bound<TextTarget>) {
+    (build_left_bound(range.0 .0), build_right_bound(range.1 .0))
+}
+
+fn build_left_bound(elm: TextElement) -> Bound<TextTarget> {
+    let target = TextTarget::backward(elm);
+    Bound::Included(target)
+}
+
+fn build_right_bound(elm: TextElement) -> Bound<TextTarget> {
+    let target = TextTarget::forward(elm);
+    match elm {
+        TextElement::CurrentPosition => Bound::Excluded(target),
+        TextElement::WordBegin => Bound::Excluded(target),
+        TextElement::WordEnd => Bound::Included(target),
+        TextElement::GraphemeCluster => Bound::Excluded(target),
+        TextElement::LineSeparator => Bound::Excluded(target),
+        TextElement::DocumentBoundary => Bound::Excluded(target),
+        TextElement::Sentence => Bound::Excluded(target),
     }
 }
 
@@ -123,6 +173,7 @@ impl rlua::FromLua<'_> for LuaTextElement {
     fn from_lua(lua_value: Value<'_>, _lua: rlua::Context<'_>) -> rlua::Result<Self> {
         if let Value::String(s) = lua_value {
             Ok(LuaTextElement(match s.to_str()? {
+                "cursor" => TextElement::CurrentPosition,
                 "word_begin" => TextElement::WordBegin,
                 "word_end" => TextElement::WordEnd,
                 "line_separator" => TextElement::LineSeparator,

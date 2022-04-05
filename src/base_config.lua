@@ -1,4 +1,4 @@
-run_first_c = function(c, vals)
+__run_first_c = function(c, vals)
     for i=1,vals.n do
         local f = vals[i]
         if f == nil then
@@ -16,11 +16,11 @@ end
 run_first = function(...)
     local vals = table.pack(...)
     return function(c)
-        return run_first_c(c, vals)
+        return __run_first_c(c, vals)
     end;
 end
 
-run_all_c = function(c, vals)
+__run_all_c = function(c, vals)
     local res = res_noop();
 
     for i=1,vals.n do
@@ -41,8 +41,51 @@ run_all = function(...)
     local vals = table.pack(...)
 
     return function(c)
-        return run_all_c(c, vals)
+        return __run_all_c(c, vals)
     end;
+end
+
+function vim_delete(from, to)
+    return function(c)
+        content = c:cursor_yank(from, to)
+        c:set_clipboard(content)
+        c:cursor_delete(from, to)
+        return res_ok()
+    end
+end
+
+function vim_change(from, to)
+    return function(c)
+        content = c:cursor_yank(from, to)
+        c:set_clipboard(content)
+        c:cursor_delete(from, to)
+        return c:push_mode("insert-line")
+    end
+end
+
+function vim_yank(from, to)
+    return function(c)
+        content = c:cursor_yank(from, to)
+        c:set_clipboard(content)
+        return res_ok()
+    end
+end
+
+function __bind_ydc_normal(sequence, from, to)
+    mode = 'normal'
+    bind('d' .. sequence, mode, vim_delete(from, to))
+    bind('c' .. sequence, mode, vim_change(from, to))
+    bind('y' .. sequence, mode, vim_yank(from, to))
+end
+
+function __bind_vim_forward_normal(sequence, to)
+    __bind_ydc_normal(sequence, 'cursor', to)
+    bind(sequence, 'normal', cursor_move_forward(to))
+end
+
+function __bind_vim_backward_normal(sequence, from)
+    __bind_ydc_normal(sequence, from, 'cursor')
+    bind(sequence, 'normal', cursor_move_backward(from))
 end
 
 define_mode('visual', 'normal')
@@ -63,21 +106,32 @@ bind('<C-o>', 'normal', select_room_history_prev)
 bind('<C-c>', 'normal', clear_message)
 bind('<Return>', 'normal', send_message)
 
+-- vim-like bindings
+bind('k', 'normal', cursor_move_up)
+bind('j', 'normal', cursor_move_down)
 bind('x', 'normal', cursor_delete_right)
 bind('X', 'normal', cursor_delete_left)
 
--- Movement
-bind('k', 'normal', cursor_move_up)
-bind('j', 'normal', cursor_move_down)
-bind('$', 'normal', cursor_move_forward('line_separator'))
-bind('l', 'normal', cursor_move_forward('cell'))
-bind('w', 'normal', cursor_move_forward('word_begin'))
-bind('e', 'normal', cursor_move_forward('word_end'))
-bind(')', 'normal', cursor_move_forward('sentence'))
-bind('0', 'normal', cursor_move_backward('line_separator'))
-bind('b', 'normal', cursor_move_backward('word_begin'))
-bind('h', 'normal', cursor_move_backward('cell'))
-bind('(', 'normal', cursor_move_backward('sentence'))
+__bind_vim_forward_normal('l', 'cell')
+__bind_vim_forward_normal('$', 'line_separator')
+__bind_vim_forward_normal('w', 'word_begin')
+__bind_vim_forward_normal('e', 'word_end')
+__bind_vim_forward_normal(')', 'sentence')
+__bind_vim_forward_normal('G', 'document_boundary')
+
+__bind_vim_backward_normal('h', 'cell')
+__bind_vim_backward_normal('0', 'line_separator')
+__bind_vim_backward_normal('b', 'word_begin')
+__bind_vim_backward_normal('(', 'sentence')
+__bind_vim_backward_normal('gg', 'document_boundary')
+
+__bind_ydc_normal('iw', 'word_begin', 'word_end')
+bind('dd', 'normal', vim_delete('line_separator', 'line_separator'))
+bind('cc', 'normal', vim_change('line_separator', 'line_separator'))
+bind('yy', 'normal', vim_yank('line_separator', 'line_separator'))
+bind('D', 'normal', vim_delete('cursor', 'line_separator'))
+bind('C', 'normal', vim_change('cursor', 'line_separator'))
+bind('Y', 'normal', vim_yank('cursor', 'line_separator'))
 
 bind('<C-c>', 'insert', clear_message)
 bind('<Esc>', 'insert', pop_mode)
@@ -121,8 +175,15 @@ bind('<Esc>', 'visual', run_all(deselect_message, pop_mode))
 bind(':', 'visual', push_mode("command"))
 bind('<Return>', 'visual', open_selected_message)
 
-bind('p', 'normal', function(c)
+bind('P', 'normal', function(c)
     content = c:get_clipboard()
+    return c:type(content)
+end)
+
+bind('p', 'normal', function(c)
+    c:cursor_move_forward('cell')
+    content = c:get_clipboard()
+    c:cursor_move_backward('cell')
     return c:type(content)
 end)
 

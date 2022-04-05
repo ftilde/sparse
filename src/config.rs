@@ -529,6 +529,7 @@ impl ConfigBuilder {
                 }
                 add_global_fun(&lua_ctx, "cursor_move_forward", 1)?;
                 add_global_fun(&lua_ctx, "cursor_move_backward", 1)?;
+                add_global_fun(&lua_ctx, "cursor_delete", 2)?;
 
                 lua_ctx.load(source).eval()?;
                 Ok(())
