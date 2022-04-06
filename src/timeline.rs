@@ -11,6 +11,128 @@ use matrix_sdk::{
 };
 use std::collections::{HashMap, VecDeque};
 
+#[derive(Clone)]
+pub struct Filter {
+    pub sender_content: String,
+}
+
+impl Filter {
+    fn matches(&self, event: &Event) -> bool {
+        event.sender().as_str().contains(&self.sender_content)
+    }
+}
+
+struct EventSequence {
+    index_offset: isize,
+    sequence: VecDeque<Box<EventId>>,
+    index: HashMap<Box<EventId>, EventSequenceId>,
+}
+
+#[derive(Copy, Clone)]
+pub struct EventSequenceId {
+    pos: isize,
+}
+
+impl EventSequence {
+    fn empty() -> Self {
+        EventSequence {
+            sequence: VecDeque::new(),
+            index: HashMap::new(),
+            index_offset: 0,
+        }
+    }
+
+    fn sequence_index_to_id(&self, id: usize) -> EventSequenceId {
+        let pos: isize = id as isize - self.index_offset;
+        EventSequenceId { pos }
+    }
+
+    fn id_to_sequence_index(&self, id: EventSequenceId) -> usize {
+        let index = id.pos + self.index_offset;
+        assert!(index >= 0);
+        index as usize
+    }
+
+    fn append(&mut self, item: Box<EventId>) {
+        let id = self.sequence_index_to_id(self.sequence.len());
+        self.index.insert(item.clone(), id);
+        self.sequence.push_back(item);
+    }
+    fn prepend(&mut self, item: Box<EventId>) {
+        self.index_offset += 1;
+
+        let id = self.sequence_index_to_id(0);
+        self.index.insert(item.clone(), id);
+        self.sequence.push_front(item)
+    }
+
+    fn event(&self, id: EventSequenceId) -> &EventId {
+        let i = self.id_to_sequence_index(id);
+        &self.sequence[i]
+    }
+
+    fn id(&self, value: &EventId) -> Option<EventSequenceId> {
+        self.index.get(value).cloned()
+    }
+
+    fn next(&self, e: &EventId) -> Option<&EventId> {
+        let id = self.id(e)?;
+        let next = self.id_to_sequence_index(id) + 1;
+        if next < self.sequence.len() {
+            Some(self.event(self.sequence_index_to_id(next)))
+        } else {
+            None
+        }
+    }
+
+    fn prev(&self, e: &EventId) -> Option<&EventId> {
+        let id = self.id(e)?;
+        let current = self.id_to_sequence_index(id);
+        if current > 0 {
+            let prev = current - 1;
+            Some(self.event(self.sequence_index_to_id(prev)))
+        } else {
+            None
+        }
+    }
+
+    fn last(&self) -> Option<&EventId> {
+        self.sequence.back().map(|e| &**e)
+    }
+}
+
+#[derive(Clone)]
+struct FilterId(isize);
+
+impl From<isize> for FilterId {
+    fn from(i: isize) -> Self {
+        FilterId(i)
+    }
+}
+impl Into<isize> for FilterId {
+    fn into(self) -> isize {
+        self.0
+    }
+}
+
+struct FilteredTimeline {
+    filter: Filter,
+    filtered_messages: EventSequence,
+}
+
+impl FilteredTimeline {
+    fn try_append(&mut self, event: &Event) {
+        if self.filter.matches(event) {
+            self.filtered_messages.append(event.event_id().to_owned());
+        }
+    }
+    fn try_prepend(&mut self, event: &Event) {
+        if self.filter.matches(event) {
+            self.filtered_messages.prepend(event.event_id().to_owned());
+        }
+    }
+}
+
 pub type Event = AnySyncRoomEvent;
 pub type Reaction = SyncMessageEvent<ReactionEventContent>;
 pub type Reactions = HashMap<String, Vec<Reaction>>;
@@ -21,9 +143,9 @@ pub enum CacheEndState {
 }
 
 pub struct RoomTimelineCache {
-    message_index_offset: isize,
-    messages: VecDeque<Event>,
-    index: HashMap<Box<EventId>, RoomTimelineIndex>,
+    full_timeline: EventSequence,
+    filtered_timeline: Option<FilteredTimeline>,
+    events: HashMap<Box<EventId>, Event>,
     pub begin: CacheEndState,
     pub end: CacheEndState,
     begin_token: Option<String>,
@@ -36,9 +158,9 @@ pub struct RoomTimelineCache {
 impl std::default::Default for RoomTimelineCache {
     fn default() -> Self {
         RoomTimelineCache {
-            message_index_offset: 0,
-            messages: VecDeque::new(),
-            index: HashMap::new(),
+            filtered_timeline: None,
+            full_timeline: EventSequence::empty(),
+            events: HashMap::new(),
             begin: CacheEndState::Open,
             end: CacheEndState::Open,
             begin_token: None,
@@ -60,7 +182,7 @@ pub enum EventWalkResult {
 impl EventWalkResult {
     pub fn message(&self) -> Option<RoomTimelineIndex> {
         if let EventWalkResult::Message(m) = self {
-            Some(*m)
+            Some(m.clone())
         } else {
             None
         }
@@ -77,7 +199,7 @@ pub enum EventWalkResultNewest {
 impl EventWalkResultNewest {
     pub fn message(&self) -> Option<RoomTimelineIndex> {
         if let EventWalkResultNewest::Message(m) = self {
-            Some(*m)
+            Some(m.clone())
         } else {
             None
         }
@@ -116,20 +238,20 @@ impl<'a> TimelineEntry<'a> {
 
 const QUERY_BATCH_SIZE_LIMIT: u32 = 10;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct RoomTimelineIndex {
-    pos: isize,
+    pos: Box<EventId>,
 }
 
 impl RoomTimelineIndex {
-    fn new(pos: isize) -> Self {
+    fn new(pos: Box<EventId>) -> Self {
         RoomTimelineIndex { pos }
     }
 }
 
 impl RoomTimelineCache {
     pub fn end_id(&self) -> Option<&EventId> {
-        self.messages.back().map(|e| e.event_id())
+        self.full_timeline.last()
     }
 
     pub fn reactions(&self, id: &EventId) -> Option<&Reactions> {
@@ -137,12 +259,13 @@ impl RoomTimelineCache {
     }
 
     fn clear_timeline(&mut self) {
-        self.messages.clear();
-        self.message_index_offset = 0;
-        self.index.clear();
+        self.events.clear();
+        self.full_timeline = EventSequence::empty();
         self.msg_to_edits.clear();
         self.edits_to_original.clear();
         self.reactions.clear();
+        let f = self.filtered_timeline.as_ref().map(|ft| ft.filter.clone());
+        self.set_filter(f);
     }
 
     pub fn clear(&mut self) {
@@ -151,6 +274,22 @@ impl RoomTimelineCache {
         self.end = CacheEndState::Open;
         self.begin_token = None;
         self.end_token = None;
+    }
+
+    pub fn set_filter(&mut self, filter: Option<Filter>) {
+        if let Some(filter) = filter {
+            let mut ft = FilteredTimeline {
+                filtered_messages: EventSequence::empty(),
+                filter,
+            };
+            for eid in &self.full_timeline.sequence {
+                let m = self.events.get(eid).unwrap();
+                ft.try_append(&m);
+            }
+            self.filtered_timeline = Some(ft);
+        } else {
+            self.filtered_timeline = None;
+        }
     }
 
     fn pre_process_message(&mut self, msg: Event) -> Option<Event> {
@@ -181,164 +320,24 @@ impl RoomTimelineCache {
         }
     }
 
-    fn buffer_index_to_message_index(&self, id: usize) -> RoomTimelineIndex {
-        RoomTimelineIndex {
-            pos: id as isize - self.message_index_offset,
-        }
-    }
-
-    fn message_index_to_buffer_index(&self, id: RoomTimelineIndex) -> usize {
-        let index = id.pos + self.message_index_offset;
-        assert!(index >= 0);
-        index as usize
-    }
-
     fn append(&mut self, msg: Event) {
         if let Some(msg) = self.pre_process_message(msg) {
-            let id = self.buffer_index_to_message_index(self.messages.len());
-            self.index.insert(msg.event_id().to_owned(), id);
-            self.messages.push_back(msg);
+            let event_id = msg.event_id().to_owned();
+            self.full_timeline.append(event_id.clone());
+            if let Some(f) = &mut self.filtered_timeline {
+                f.try_append(&msg);
+            }
+            self.events.insert(event_id, msg);
         }
     }
     fn prepend(&mut self, msg: Event) {
         if let Some(msg) = self.pre_process_message(msg) {
-            self.message_index_offset += 1;
-
-            let id = self.buffer_index_to_message_index(0);
-            self.index.insert(msg.event_id().to_owned(), id);
-            self.messages.push_front(msg)
-        }
-    }
-
-    fn entry_from_event<'a>(&'a self, original: &'a Event) -> TimelineEntry<'a> {
-        if let Some(e) = self.msg_to_edits.get(original.event_id()) {
-            TimelineEntry::Edited {
-                original,
-                versions: e,
+            let event_id = msg.event_id().to_owned();
+            self.full_timeline.prepend(event_id.clone());
+            if let Some(f) = &mut self.filtered_timeline {
+                f.try_prepend(&msg);
             }
-        } else {
-            TimelineEntry::Simple(original)
-        }
-    }
-
-    fn event_at(&self, id: RoomTimelineIndex) -> &Event {
-        let index = self.message_index_to_buffer_index(id);
-        &self.messages[index]
-    }
-
-    pub fn message(&self, id: RoomTimelineIndex) -> TimelineEntry {
-        let original = self.event_at(id);
-        self.entry_from_event(original)
-    }
-
-    fn find(&self, id: &EventId) -> Option<RoomTimelineIndex> {
-        let orig_id = self
-            .edits_to_original
-            .get(id)
-            .map(|e| e.as_ref())
-            .unwrap_or(id);
-        self.index.get(orig_id).map(|i| *i)
-    }
-
-    pub fn original_message(&self, id: &EventId) -> Option<&Event> {
-        self.find(id).map(|i| self.event_at(i))
-    }
-
-    pub fn message_from_id(&self, id: &EventId) -> Option<TimelineEntry> {
-        self.find(id)
-            .map(|i| self.entry_from_event(self.event_at(i)))
-    }
-
-    pub fn walk_from_known(&self, id: &EventId) -> EventWalkResult {
-        if let Some(i) = self.find(id) {
-            EventWalkResult::Message(i)
-        } else {
-            EventWalkResult::RequiresFetch
-        }
-    }
-
-    pub fn walk_from_newest(&self) -> EventWalkResultNewest {
-        match self.end {
-            CacheEndState::Reached => {
-                if !self.messages.is_empty() {
-                    EventWalkResultNewest::Message(
-                        self.buffer_index_to_message_index(self.messages.len() - 1),
-                    )
-                } else {
-                    EventWalkResultNewest::End
-                }
-            }
-            CacheEndState::Open => EventWalkResultNewest::RequiresFetch(
-                if let Some(i) = self.messages.len().checked_sub(1) {
-                    Some(self.buffer_index_to_message_index(i))
-                } else {
-                    None
-                },
-            ),
-        }
-    }
-
-    pub fn next<'a>(&'a self, pos: RoomTimelineIndex) -> EventWalkResult {
-        let new_pos = RoomTimelineIndex::new(pos.pos + 1);
-        if self.message_index_to_buffer_index(new_pos) < self.messages.len() {
-            EventWalkResult::Message(new_pos)
-        } else {
-            match self.end {
-                CacheEndState::Reached => EventWalkResult::End,
-                CacheEndState::Open => EventWalkResult::RequiresFetch,
-            }
-        }
-    }
-    pub fn previous<'a>(&'a self, pos: RoomTimelineIndex) -> EventWalkResult {
-        if pos.pos + self.message_index_offset > 0 {
-            EventWalkResult::Message(RoomTimelineIndex::new(pos.pos - 1))
-        } else {
-            match self.begin {
-                CacheEndState::Reached => EventWalkResult::End,
-                CacheEndState::Open => EventWalkResult::RequiresFetch,
-            }
-        }
-    }
-
-    pub async fn events_query(
-        &self,
-        client: &Client,
-        room: Room,
-        query: MessageQuery,
-    ) -> impl std::future::Future<Output = matrix_sdk::Result<MessageQueryResult>> {
-        let room_id = room.room_id().to_owned();
-
-        let (query, dir, from, to) = {
-            match (query, &self.begin_token, &self.end_token) {
-                (MessageQuery::AfterCache, _, Some(t)) => (
-                    MessageQuery::AfterCache,
-                    Direction::Forward,
-                    t.clone(),
-                    client.sync_token().await,
-                ),
-                (MessageQuery::BeforeCache, Some(t), _) => (
-                    MessageQuery::BeforeCache,
-                    Direction::Backward,
-                    t.clone(),
-                    None,
-                ),
-                (_, _, t) => (
-                    MessageQuery::Newest,
-                    Direction::Backward,
-                    client.sync_token().await.unwrap(),
-                    t.clone(),
-                ),
-            }
-        };
-
-        async move {
-            let mut request = get_message_events::Request::new(&room_id, &from, dir);
-            request.limit = QUERY_BATCH_SIZE_LIMIT.into();
-            request.to = to.as_deref();
-
-            let events = room.messages(request).await?;
-
-            Ok(MessageQueryResult { events, query })
+            self.events.insert(event_id, msg);
         }
     }
 
@@ -416,6 +415,140 @@ impl RoomTimelineCache {
             for msg in transform_events(events.into_iter()) {
                 self.append(msg);
             }
+        }
+    }
+
+    fn entry_from_event<'a>(&'a self, original: &'a Event) -> TimelineEntry<'a> {
+        if let Some(e) = self.msg_to_edits.get(original.event_id()) {
+            TimelineEntry::Edited {
+                original,
+                versions: e,
+            }
+        } else {
+            TimelineEntry::Simple(original)
+        }
+    }
+
+    pub fn message(&self, id: RoomTimelineIndex) -> TimelineEntry {
+        let original = self.events.get(&id.pos).unwrap();
+        self.entry_from_event(original)
+    }
+
+    fn find(&self, id: &EventId) -> Option<RoomTimelineIndex> {
+        if self.events.get(id).is_some() {
+            Some(RoomTimelineIndex::new(id.to_owned()))
+        } else {
+            None
+        }
+    }
+
+    pub fn original_message(&self, id: &EventId) -> Option<&Event> {
+        self.events.get(id)
+    }
+
+    pub fn message_from_id(&self, id: &EventId) -> Option<TimelineEntry> {
+        self.events.get(id).map(|i| self.entry_from_event(i))
+    }
+
+    pub fn walk_from_known(&self, id: &EventId) -> EventWalkResult {
+        if let Some(i) = self.find(id) {
+            EventWalkResult::Message(i)
+        } else {
+            EventWalkResult::RequiresFetch
+        }
+    }
+
+    pub fn walk_from_newest(&self) -> EventWalkResultNewest {
+        let newest_index = if let Some(ft) = &self.filtered_timeline {
+            ft.filtered_messages.last()
+        } else {
+            self.full_timeline.last()
+        };
+        let newest_index = newest_index.map(|i| RoomTimelineIndex::new(i.to_owned()));
+        match self.end {
+            CacheEndState::Reached => {
+                if let Some(i) = newest_index {
+                    EventWalkResultNewest::Message(i)
+                } else {
+                    EventWalkResultNewest::End
+                }
+            }
+            CacheEndState::Open => EventWalkResultNewest::RequiresFetch(newest_index),
+        }
+    }
+
+    pub fn next<'a>(&'a self, pos: RoomTimelineIndex) -> EventWalkResult {
+        let new_pos = if let Some(ft) = &self.filtered_timeline {
+            ft.filtered_messages.next(&pos.pos)
+        } else {
+            self.full_timeline.next(&pos.pos)
+        };
+        let new_pos = new_pos.map(|i| RoomTimelineIndex::new(i.to_owned()));
+        if let Some(new_pos) = new_pos {
+            EventWalkResult::Message(new_pos)
+        } else {
+            match self.end {
+                CacheEndState::Reached => EventWalkResult::End,
+                CacheEndState::Open => EventWalkResult::RequiresFetch,
+            }
+        }
+    }
+    pub fn previous<'a>(&'a self, pos: RoomTimelineIndex) -> EventWalkResult {
+        let new_pos = if let Some(ft) = &self.filtered_timeline {
+            ft.filtered_messages.prev(&pos.pos)
+        } else {
+            self.full_timeline.prev(&pos.pos)
+        };
+        let new_pos = new_pos.map(|i| RoomTimelineIndex::new(i.to_owned()));
+        if let Some(new_pos) = new_pos {
+            EventWalkResult::Message(new_pos)
+        } else {
+            match self.begin {
+                CacheEndState::Reached => EventWalkResult::End,
+                CacheEndState::Open => EventWalkResult::RequiresFetch,
+            }
+        }
+    }
+
+    pub async fn events_query(
+        &self,
+        client: &Client,
+        room: Room,
+        query: MessageQuery,
+    ) -> impl std::future::Future<Output = matrix_sdk::Result<MessageQueryResult>> {
+        let room_id = room.room_id().to_owned();
+
+        let (query, dir, from, to) = {
+            match (query, &self.begin_token, &self.end_token) {
+                (MessageQuery::AfterCache, _, Some(t)) => (
+                    MessageQuery::AfterCache,
+                    Direction::Forward,
+                    t.clone(),
+                    client.sync_token().await,
+                ),
+                (MessageQuery::BeforeCache, Some(t), _) => (
+                    MessageQuery::BeforeCache,
+                    Direction::Backward,
+                    t.clone(),
+                    None,
+                ),
+                (_, _, t) => (
+                    MessageQuery::Newest,
+                    Direction::Backward,
+                    client.sync_token().await.unwrap(),
+                    t.clone(),
+                ),
+            }
+        };
+
+        async move {
+            let mut request = get_message_events::Request::new(&room_id, &from, dir);
+            request.limit = QUERY_BATCH_SIZE_LIMIT.into();
+            request.to = to.as_deref();
+
+            let events = room.messages(request).await?;
+
+            Ok(MessageQueryResult { events, query })
         }
     }
 

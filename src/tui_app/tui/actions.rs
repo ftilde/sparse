@@ -15,7 +15,7 @@ use cli_clipboard::ClipboardProvider;
 use super::super::State;
 use super::{BuiltinMode, EventDetail, SendMessageType, Tasks};
 use crate::config::Config;
-use crate::timeline::Event;
+use crate::timeline::{Event, Filter};
 
 pub struct KeyAction<'a>(pub &'a RegistryKey);
 
@@ -345,6 +345,14 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             ActionResult::Noop
         }
     }),
+    ("clear_filter", |c| {
+        if let Some(room) = c.state.current_room_state_mut() {
+            room.messages.set_filter(None);
+            ActionResult::Ok
+        } else {
+            ActionResult::Error("No current room".to_owned())
+        }
+    }),
     ("start_reply", |c| {
         if let Some(room) = c.state.current_room_state_mut() {
             if let super::MessageSelection::Specific(eid) = &room.tui.selection {
@@ -542,6 +550,14 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
         Some(m) => {
             c.state.tui.push_mode(m);
             ActionResult::Ok
+        }
+    }),
+    ("set_filter", |c, s| {
+        if let Some(room) = c.state.current_room_state_mut() {
+            room.messages.set_filter(Some(Filter { sender_content: s }));
+            ActionResult::Ok
+        } else {
+            ActionResult::Error("No current room".to_owned())
         }
     }),
     ("react", |c, s| {

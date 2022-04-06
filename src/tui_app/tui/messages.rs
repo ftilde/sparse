@@ -99,7 +99,7 @@ impl Messages<'_> {
         loop {
             msg = match msg {
                 EventWalkResult::Message(id) => {
-                    let e = state.messages.message(id);
+                    let e = state.messages.message(id.clone());
                     let evt = TuiEvent {
                         event: e,
                         width: window.get_width(),
@@ -183,7 +183,7 @@ impl Messages<'_> {
         loop {
             match msg {
                 EventWalkResult::Message(id) => {
-                    let event = state.messages.message(id);
+                    let event = state.messages.message(id.clone());
                     let selected = event.event_id() == selected_msg;
                     collected_height += TuiEvent {
                         event,
@@ -224,7 +224,7 @@ impl Messages<'_> {
         loop {
             msg = match msg {
                 EventWalkResult::Message(id) => {
-                    let event = state.messages.message(id);
+                    let event = state.messages.message(id.clone());
                     let selected = event.event_id() == selected_msg;
                     let evt = TuiEvent {
                         event,
