@@ -92,14 +92,14 @@ impl Messages<'_> {
         &self,
         mut window: Window,
         hints: RenderingHints,
-        mut msg: EventWalkResult,
+        mut msg: EventWalkResult<'b>,
         room: &RoomId,
         state: &'b crate::tui_app::RoomState,
     ) {
         loop {
             msg = match msg {
                 EventWalkResult::Message(id) => {
-                    let e = state.messages.message(id.clone());
+                    let e = state.messages.message(id);
                     let evt = TuiEvent {
                         event: e,
                         width: window.get_width(),
@@ -183,7 +183,7 @@ impl Messages<'_> {
         loop {
             match msg {
                 EventWalkResult::Message(id) => {
-                    let event = state.messages.message(id.clone());
+                    let event = state.messages.message(id);
                     let selected = event.event_id() == selected_msg;
                     collected_height += TuiEvent {
                         event,
@@ -224,7 +224,7 @@ impl Messages<'_> {
         loop {
             msg = match msg {
                 EventWalkResult::Message(id) => {
-                    let event = state.messages.message(id.clone());
+                    let event = state.messages.message(id);
                     let selected = event.event_id() == selected_msg;
                     let evt = TuiEvent {
                         event,

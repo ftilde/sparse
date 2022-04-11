@@ -172,34 +172,34 @@ impl std::default::Default for RoomTimelineCache {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum EventWalkResult {
-    Message(RoomTimelineIndex),
+#[derive(Debug, Clone, Copy)]
+pub enum EventWalkResult<'a> {
+    Message(RoomTimelineIndex<'a>),
     RequiresFetch,
     End,
 }
 
-impl EventWalkResult {
-    pub fn message(&self) -> Option<RoomTimelineIndex> {
+impl<'a> EventWalkResult<'a> {
+    pub fn message(self) -> Option<RoomTimelineIndex<'a>> {
         if let EventWalkResult::Message(m) = self {
-            Some(m.clone())
+            Some(m)
         } else {
             None
         }
     }
 }
 
-#[derive(Debug)]
-pub enum EventWalkResultNewest {
-    Message(RoomTimelineIndex),
-    RequiresFetch(Option<RoomTimelineIndex>), //There may be newer events, but this is the newest we got
+#[derive(Debug, Clone, Copy)]
+pub enum EventWalkResultNewest<'a> {
+    Message(RoomTimelineIndex<'a>),
+    RequiresFetch(Option<RoomTimelineIndex<'a>>), //There may be newer events, but this is the newest we got
     End,
 }
 
-impl EventWalkResultNewest {
-    pub fn message(&self) -> Option<RoomTimelineIndex> {
+impl<'a> EventWalkResultNewest<'a> {
+    pub fn message(self) -> Option<RoomTimelineIndex<'a>> {
         if let EventWalkResultNewest::Message(m) = self {
-            Some(m.clone())
+            Some(m)
         } else {
             None
         }
@@ -238,13 +238,13 @@ impl<'a> TimelineEntry<'a> {
 
 const QUERY_BATCH_SIZE_LIMIT: u32 = 10;
 
-#[derive(Clone, Debug)]
-pub struct RoomTimelineIndex {
-    pos: Box<EventId>,
+#[derive(Clone, Copy, Debug)]
+pub struct RoomTimelineIndex<'a> {
+    pos: &'a EventId,
 }
 
-impl RoomTimelineIndex {
-    fn new(pos: Box<EventId>) -> Self {
+impl RoomTimelineIndex<'_> {
+    fn new<'a>(pos: &'a EventId) -> RoomTimelineIndex<'a> {
         RoomTimelineIndex { pos }
     }
 }
@@ -430,13 +430,13 @@ impl RoomTimelineCache {
     }
 
     pub fn message(&self, id: RoomTimelineIndex) -> TimelineEntry {
-        let original = self.events.get(&id.pos).unwrap();
+        let original = self.events.get(id.pos).unwrap();
         self.entry_from_event(original)
     }
 
-    fn find(&self, id: &EventId) -> Option<RoomTimelineIndex> {
+    fn find<'a>(&'a self, id: &'a EventId) -> Option<RoomTimelineIndex<'a>> {
         if self.events.get(id).is_some() {
-            Some(RoomTimelineIndex::new(id.to_owned()))
+            Some(RoomTimelineIndex::new(id))
         } else {
             None
         }
@@ -450,7 +450,7 @@ impl RoomTimelineCache {
         self.events.get(id).map(|i| self.entry_from_event(i))
     }
 
-    pub fn walk_from_known(&self, id: &EventId) -> EventWalkResult {
+    pub fn walk_from_known<'a>(&'a self, id: &'a EventId) -> EventWalkResult<'a> {
         if let Some(i) = self.find(id) {
             EventWalkResult::Message(i)
         } else {
@@ -458,13 +458,13 @@ impl RoomTimelineCache {
         }
     }
 
-    pub fn walk_from_newest(&self) -> EventWalkResultNewest {
+    pub fn walk_from_newest<'a>(&'a self) -> EventWalkResultNewest<'a> {
         let newest_index = if let Some(ft) = &self.filtered_timeline {
             ft.filtered_messages.last()
         } else {
             self.full_timeline.last()
         };
-        let newest_index = newest_index.map(|i| RoomTimelineIndex::new(i.to_owned()));
+        let newest_index = newest_index.map(|i| RoomTimelineIndex::new(i));
         match self.end {
             CacheEndState::Reached => {
                 if let Some(i) = newest_index {
@@ -483,7 +483,7 @@ impl RoomTimelineCache {
         } else {
             self.full_timeline.next(&pos.pos)
         };
-        let new_pos = new_pos.map(|i| RoomTimelineIndex::new(i.to_owned()));
+        let new_pos = new_pos.map(|i| RoomTimelineIndex::new(i));
         if let Some(new_pos) = new_pos {
             EventWalkResult::Message(new_pos)
         } else {
@@ -499,7 +499,7 @@ impl RoomTimelineCache {
         } else {
             self.full_timeline.prev(&pos.pos)
         };
-        let new_pos = new_pos.map(|i| RoomTimelineIndex::new(i.to_owned()));
+        let new_pos = new_pos.map(|i| RoomTimelineIndex::new(i));
         if let Some(new_pos) = new_pos {
             EventWalkResult::Message(new_pos)
         } else {
