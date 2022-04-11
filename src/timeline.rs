@@ -101,20 +101,6 @@ impl EventSequence {
     }
 }
 
-#[derive(Clone)]
-struct FilterId(isize);
-
-impl From<isize> for FilterId {
-    fn from(i: isize) -> Self {
-        FilterId(i)
-    }
-}
-impl Into<isize> for FilterId {
-    fn into(self) -> isize {
-        self.0
-    }
-}
-
 struct FilteredTimeline {
     filter: Filter,
     filtered_messages: EventSequence,
