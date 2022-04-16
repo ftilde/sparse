@@ -1,7 +1,7 @@
 use std::ops::Bound;
 use std::str::FromStr;
 
-use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+use matrix_sdk::ruma::events::room::message::{Relation, RoomMessageEventContent};
 use rlua::{Lua, RegistryKey, UserData, UserDataMethods, Value};
 
 use matrix_sdk::Client;
@@ -335,6 +335,37 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     }),
     ("select_room_history_prev", |c| {
         c.state.tui.room_selection.scroll_backwards().into()
+    }),
+    ("follow_reply", |c| {
+        if let Some(room) = c.state.current_room_state_mut() {
+            if let super::MessageSelection::Specific(eid) = &room.tui.selection {
+                if let Some(m) = room.messages.message_from_id(&eid) {
+                    if let Some(Event::Message(AnySyncMessageEvent::RoomMessage(message))) =
+                        m.latest()
+                    {
+                        if let Some(Relation::Reply { in_reply_to: rel }) =
+                            &message.content.relates_to
+                        {
+                            room.tui.selection =
+                                super::MessageSelection::Specific(rel.event_id.to_owned());
+                            ActionResult::Ok
+                        } else {
+                            ActionResult::Error(format!("Message is not a reply"))
+                        }
+                    } else {
+                        ActionResult::Error(
+                            format!("Only simple message events can be followed",),
+                        )
+                    }
+                } else {
+                    ActionResult::Error(format!("Cannot find message with id {:?}", eid))
+                }
+            } else {
+                ActionResult::Error("No message selected".to_owned())
+            }
+        } else {
+            ActionResult::Error("No current room".to_owned())
+        }
     }),
     ("force_room_selection", |c| {
         let mut r = super::rooms::RoomsMut(&mut c.state);
