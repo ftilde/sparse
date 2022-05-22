@@ -763,10 +763,11 @@ impl DrawEvent for TimelineEntry<'_> {
             TimelineEntry::Simple(m) => {
                 m.draw(room_state, c, simplified);
             }
-            TimelineEntry::Deleted(_m) => {
+            TimelineEntry::Deleted(m) => {
                 let mut c = c.save().style_modifier();
+                write_user(&mut c, &m.sender(), room_state);
                 c.set_style_modifier(StyleModifier::new().italic(true));
-                c.write("deleted message");
+                c.write(" deleted message");
             }
             TimelineEntry::Edited { versions, .. } => {
                 versions.last().unwrap().draw(room_state, c, simplified);

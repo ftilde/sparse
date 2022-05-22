@@ -1,5 +1,7 @@
 use matrix_sdk::ruma::api::client::r0::message::get_message_events::{self, Direction};
 use matrix_sdk::ruma::events::room::encrypted::Relation;
+use matrix_sdk::ruma::events::room::redaction::SyncRoomRedactionEvent;
+use matrix_sdk::ruma::events::AnyRedactedSyncMessageEvent;
 use matrix_sdk::{
     deserialized_responses::SyncRoomEvent,
     room::{Messages, Room},
@@ -137,8 +139,10 @@ pub struct RoomTimelineCache {
     begin_token: Option<String>,
     end_token: Option<String>,
     reactions: HashMap<Box<EventId>, Reactions>,
+    reactions_to_target: HashMap<Box<EventId>, Box<EventId>>,
     msg_to_edits: HashMap<Box<EventId>, Vec<Event>>,
     edits_to_original: HashMap<Box<EventId>, Box<EventId>>,
+    redactions: HashMap<Box<EventId>, Box<SyncRoomRedactionEvent>>,
 }
 
 impl std::default::Default for RoomTimelineCache {
@@ -152,8 +156,10 @@ impl std::default::Default for RoomTimelineCache {
             begin_token: None,
             end_token: None,
             reactions: HashMap::new(),
+            reactions_to_target: HashMap::new(),
             msg_to_edits: HashMap::new(),
             edits_to_original: HashMap::new(),
+            redactions: HashMap::new(),
         }
     }
 }
@@ -250,6 +256,7 @@ impl RoomTimelineCache {
         self.msg_to_edits.clear();
         self.edits_to_original.clear();
         self.reactions.clear();
+        self.reactions_to_target.clear();
         let f = self.filtered_timeline.as_ref().map(|ft| ft.filter.clone());
         self.set_filter(f);
     }
@@ -281,12 +288,43 @@ impl RoomTimelineCache {
     fn pre_process_message(&mut self, msg: Event) -> Option<Event> {
         match msg {
             Event::Message(AnySyncMessageEvent::Reaction(r)) => {
+                self.reactions_to_target
+                    .insert(r.event_id.to_owned(), r.content.relates_to.event_id.clone());
                 self.reactions
                     .entry(r.content.relates_to.event_id.to_owned())
                     .or_default()
                     .entry(r.content.relates_to.emoji.to_owned())
                     .or_default()
                     .push(r);
+                None
+            }
+            Event::RedactedMessage(AnyRedactedSyncMessageEvent::Reaction(_r)) => {
+                // Ignore deleted reactions
+                None
+            }
+            Event::Message(AnySyncMessageEvent::RoomRedaction(r)) => {
+                let id = &r.redacts;
+                // TODO: remove reactions
+                if let Some(reaction_target) = self.reactions_to_target.remove(id) {
+                    if let Some(reactions) = self.reactions.get_mut(&reaction_target) {
+                        for (emoji, reaction_events) in reactions.iter_mut() {
+                            if let Some(i) = reaction_events.iter().position(|e| *e.event_id == *id)
+                            {
+                                reaction_events.remove(i);
+                            }
+                            if reaction_events.is_empty() {
+                                let emoji = emoji.to_owned();
+                                reactions.remove(&emoji);
+                                break;
+                            }
+                        }
+                        if reactions.is_empty() {
+                            self.reactions.remove(&reaction_target);
+                        }
+                    }
+                } else {
+                    self.redactions.insert(id.to_owned(), Box::new(r));
+                }
                 None
             }
             Event::Message(m) => {
@@ -405,7 +443,9 @@ impl RoomTimelineCache {
     }
 
     fn entry_from_event<'a>(&'a self, original: &'a Event) -> TimelineEntry<'a> {
-        if let Some(e) = self.msg_to_edits.get(original.event_id()) {
+        if let Some(_e) = self.redactions.get(original.event_id()) {
+            TimelineEntry::Deleted(original)
+        } else if let Some(e) = self.msg_to_edits.get(original.event_id()) {
             TimelineEntry::Edited {
                 original,
                 versions: e,
