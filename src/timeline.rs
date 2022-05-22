@@ -456,7 +456,10 @@ impl RoomTimelineCache {
                 if let Some(i) = newest_index {
                     EventWalkResultNewest::Message(i)
                 } else {
-                    EventWalkResultNewest::End
+                    match self.begin {
+                        CacheEndState::Reached => EventWalkResultNewest::End,
+                        CacheEndState::Open => EventWalkResultNewest::RequiresFetch(None),
+                    }
                 }
             }
             CacheEndState::Open => EventWalkResultNewest::RequiresFetch(newest_index),

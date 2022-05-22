@@ -143,8 +143,15 @@ impl Messages<'_> {
             EventWalkResultNewest::Message(m) => m,
             EventWalkResultNewest::End => return,
             EventWalkResultNewest::RequiresFetch(latest) => {
-                self.1
-                    .set_message_query(room.to_owned(), MessageQuery::Newest);
+                if state.messages.reached_newest() {
+                    // We have received the latest events, but none that are suitable for display
+                    // (e.g. only state updates or message deletions)
+                    self.1
+                        .set_message_query(room.to_owned(), MessageQuery::BeforeCache);
+                } else {
+                    self.1
+                        .set_message_query(room.to_owned(), MessageQuery::Newest);
+                }
 
                 let split = (window.get_height() - 1).from_origin();
                 let (above, mut below) = match window.split(split) {
