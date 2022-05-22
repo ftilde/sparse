@@ -169,6 +169,7 @@ bind('<Return>', 'command', run_all(run_command, pop_mode))
 
 bind('k', 'visual', select_prev_message)
 bind('j', 'visual', select_next_message)
+bind('f', 'visual', follow_reply)
 bind('r', 'visual', run_all(start_reply, deselect_message, switch_mode("insert-line")))
 bind('c', 'visual', run_all(start_edit, deselect_message, switch_mode("insert-line")))
 bind('<Esc>', 'visual', run_all(deselect_message, pop_mode))
