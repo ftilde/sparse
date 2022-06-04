@@ -490,6 +490,7 @@ pub enum EventDetail {
     Full,
     Selected,
     Reduced,
+    Debug,
 }
 
 impl std::default::Default for EventDetail {
@@ -506,6 +507,7 @@ impl FromStr for EventDetail {
             "full" => EventDetail::Full,
             "selected" => EventDetail::Selected,
             "reduced" => EventDetail::Reduced,
+            "debug" => EventDetail::Debug,
             _ => return Err(()),
         })
     }
@@ -517,6 +519,7 @@ impl std::fmt::Display for EventDetail {
             EventDetail::Full => "full",
             EventDetail::Selected => "selected",
             EventDetail::Reduced => "reduced",
+            EventDetail::Debug => "debug",
         };
         write!(f, "{}", s)
     }

@@ -77,11 +77,13 @@ impl Scrollable for MessagesMut<'_> {
     }
 }
 
-fn detailed(state: &State, selected: bool) -> bool {
-    match state.tui.event_detail {
-        EventDetail::Full => true,
-        EventDetail::Reduced => false,
-        EventDetail::Selected => selected,
+fn show_mode(state: &State, selected: bool) -> EventShowMode {
+    match (state.tui.event_detail, selected) {
+        (EventDetail::Full, _) => EventShowMode::Detailed,
+        (EventDetail::Selected, true) => EventShowMode::Detailed,
+        (EventDetail::Reduced, _) => EventShowMode::Simple,
+        (EventDetail::Selected, false) => EventShowMode::Simple,
+        (EventDetail::Debug, _) => EventShowMode::Debug,
     }
 }
 
@@ -104,7 +106,7 @@ impl Messages<'_> {
                         event: e,
                         width: window.get_width(),
                         room_state: state,
-                        detailed: detailed(&self.0, false),
+                        show_mode: show_mode(&self.0, false),
                     };
                     let h = evt.space_demand().height.min;
                     let window_height = window.get_height();
@@ -196,7 +198,7 @@ impl Messages<'_> {
                         event,
                         width: window.get_width(),
                         room_state: state,
-                        detailed: detailed(self.0, selected),
+                        show_mode: show_mode(self.0, selected),
                     }
                     .space_demand()
                     .height
@@ -237,7 +239,7 @@ impl Messages<'_> {
                         event,
                         width: window.get_width(),
                         room_state: state,
-                        detailed: detailed(self.0, selected),
+                        show_mode: show_mode(self.0, selected),
                     };
                     let h = evt.space_demand().height.min;
                     let (mut current, below) = match window.split(h.from_origin()) {
@@ -339,11 +341,18 @@ impl CursorTarget for StyledLine {
     }
 }
 
+#[derive(Copy, Clone)]
+enum EventShowMode {
+    Simple,
+    Detailed,
+    Debug,
+}
+
 struct TuiEvent<'a> {
     event: crate::timeline::TimelineEntry<'a>,
     width: Width,
     room_state: &'a crate::tui_app::RoomState,
-    detailed: bool,
+    show_mode: EventShowMode,
 }
 
 pub fn strip_body(mut body: &str) -> &str {
@@ -717,6 +726,46 @@ impl DrawEvent for crate::tui_app::timeline::Event {
     }
 }
 
+struct Debug<'a>(TimelineEntry<'a>);
+
+impl DrawEvent for Debug<'_> {
+    fn draw<T: unsegen::base::CursorTarget>(
+        &self,
+        _room_state: &crate::tui_app::RoomState,
+        c: &mut Cursor<T>,
+        _simplified: bool,
+    ) {
+        c.set_wrapping_mode(WrappingMode::Wrap);
+        match self.0 {
+            TimelineEntry::Simple(m) => {
+                let _ = writeln!(c, "{}:", m.event_id());
+                let _ = write!(c, "{:?}", m);
+            }
+            TimelineEntry::Deleted(m) => {
+                let _ = writeln!(c, "{}:", m.event_id());
+                let _ = write!(c, "{:?}", m);
+                let mut c = c.save().style_modifier();
+                c.set_style_modifier(StyleModifier::new().italic(true));
+                c.write(" (deleted)");
+            }
+            TimelineEntry::Edited { original, versions } => {
+                {
+                    let mut c = c.save().style_modifier().line_start_column();
+                    let _ = writeln!(c, "{}:", original.event_id());
+                    let _ = write!(c, "{:?}", original);
+                }
+                for r in versions {
+                    let mut c = c.save().style_modifier().line_start_column();
+                    c.wrap_line();
+                    write_time(&mut c, &r);
+                    let _ = writeln!(c, "{}:", r.event_id());
+                    let _ = write!(c, "{:?}", r);
+                }
+            }
+        }
+    }
+}
+
 struct Detailed<'a>(TimelineEntry<'a>);
 
 impl DrawEvent for Detailed<'_> {
@@ -796,10 +845,20 @@ impl TuiEvent<'_> {
         let start = c.get_col();
         c.set_line_start_column(start);
 
-        if self.detailed {
-            Detailed(self.event).draw(self.room_state, c, false);
-        } else {
-            self.event.draw(self.room_state, c, false);
+        let detailed;
+        match self.show_mode {
+            EventShowMode::Simple => {
+                self.event.draw(self.room_state, c, false);
+                detailed = false;
+            }
+            EventShowMode::Detailed => {
+                Detailed(self.event).draw(self.room_state, c, false);
+                detailed = true;
+            }
+            EventShowMode::Debug => {
+                Debug(self.event).draw(self.room_state, c, false);
+                detailed = true;
+            }
         }
 
         if let Some(reactions) = self.room_state.messages.reactions(self.event.event_id()) {
@@ -809,7 +868,7 @@ impl TuiEvent<'_> {
                 let _ = write!(c, "\nReactions: ");
             }
             for (emoji, events) in reactions {
-                if self.detailed {
+                if detailed {
                     let _ = write!(c, "\n");
                     for e in events {
                         write_user(c, &e.sender, self.room_state);

@@ -269,8 +269,9 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                         SendMessageType::Edit(prev_msg) => {
                             let prev_id = room
                                 .messages
-                                .original_message(&*prev_msg.event_id)
-                                .map(|e| e.event_id())
+                                .message_from_id(&*prev_msg.event_id)
+                                .and_then(|m| m.latest())
+                                .map(|e| e.event_id()) //TODO error out this means that the message has been deleted?
                                 .unwrap_or(&*prev_msg.event_id)
                                 .to_owned();
                             let mut m = RoomMessageEventContent::text_plain(msg);
@@ -353,9 +354,7 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                             ActionResult::Error(format!("Message is not a reply"))
                         }
                     } else {
-                        ActionResult::Error(
-                            format!("Only simple message events can be followed",),
-                        )
+                        ActionResult::Error(format!("Only simple message events can be followed",))
                     }
                 } else {
                     ActionResult::Error(format!("Cannot find message with id {:?}", eid))
