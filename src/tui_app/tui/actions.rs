@@ -263,26 +263,24 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                 if let Some(m_room) = c.client.get_joined_room(&room.id) {
                     let content = match tmp_type {
                         SendMessageType::Simple => RoomMessageEventContent::text_plain(msg),
-                        SendMessageType::Reply(original_message) => {
-                            RoomMessageEventContent::text_reply_plain(msg, &original_message)
+                        SendMessageType::Reply(prev_id, original_message) => {
+                            let mut repl =
+                                RoomMessageEventContent::text_reply_plain(msg, &original_message);
+                            // Fix up id to point to the original message id in case of edits
+                            repl.relates_to = Some(Relation::Reply {
+                                in_reply_to:
+                                    matrix_sdk::ruma::events::room::message::InReplyTo::new(prev_id),
+                            });
+                            repl
                         }
-                        SendMessageType::Edit(prev_msg) => {
-                            let prev_id = room
-                                .messages
-                                .message_from_id(&*prev_msg.event_id)
-                                .and_then(|m| m.latest())
-                                .map(|e| e.event_id()) //TODO error out this means that the message has been deleted?
-                                .unwrap_or(&*prev_msg.event_id)
-                                .to_owned();
+                        SendMessageType::Edit(prev_id, _prev_msg) => {
                             let mut m = RoomMessageEventContent::text_plain(msg);
-                            m.relates_to = Some(
-                                matrix_sdk::ruma::events::room::message::Relation::Replacement(
-                                    matrix_sdk::ruma::events::room::message::Replacement::new(
-                                        prev_id,
-                                        Box::new(m.clone()),
-                                    ),
+                            m.relates_to = Some(Relation::Replacement(
+                                matrix_sdk::ruma::events::room::message::Replacement::new(
+                                    prev_id,
+                                    Box::new(m.clone()),
                                 ),
-                            );
+                            ));
                             m
                         }
                     };
@@ -390,7 +388,8 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                     if let Some(Event::Message(AnySyncMessageEvent::RoomMessage(message))) =
                         m.latest()
                     {
-                        room.tui.msg_edit_type = super::SendMessageType::Reply(message.clone());
+                        room.tui.msg_edit_type =
+                            super::SendMessageType::Reply(m.event_id().to_owned(), message.clone());
                         ActionResult::Ok
                     } else {
                         ActionResult::Error(
@@ -415,7 +414,8 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                         AnySyncMessageEvent::RoomMessage(latest),
                     )) = m.latest()
                     {
-                        room.tui.msg_edit_type = super::SendMessageType::Edit(latest.clone());
+                        room.tui.msg_edit_type =
+                            super::SendMessageType::Edit(m.event_id().to_owned(), latest.clone());
                         room.tui
                             .msg_edit
                             .set(super::messages::strip_body(latest.content.body()));

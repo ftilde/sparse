@@ -263,7 +263,7 @@ fn msg_edit<'a>(
 ) -> impl Widget + 'a {
     let mut layout = VLayout::new();
     match &room_state.tui.msg_edit_type {
-        SendMessageType::Reply(display_message) => {
+        SendMessageType::Reply(_, display_message) => {
             layout = layout.widget(Foo(
                 ColDemand::at_least(1),
                 RowDemand::exact(1),
@@ -277,7 +277,7 @@ fn msg_edit<'a>(
                 },
             ));
         }
-        SendMessageType::Edit(content) => {
+        SendMessageType::Edit(_, content) => {
             layout = layout.widget(Foo(
                 ColDemand::at_least(1),
                 RowDemand::exact(1),
@@ -355,8 +355,8 @@ pub enum Event {
 #[derive(Debug)]
 pub enum SendMessageType {
     Simple,
-    Reply(SyncMessageEvent<RoomMessageEventContent>),
-    Edit(SyncMessageEvent<RoomMessageEventContent>),
+    Reply(Box<EventId>, SyncMessageEvent<RoomMessageEventContent>),
+    Edit(Box<EventId>, SyncMessageEvent<RoomMessageEventContent>),
 }
 
 #[derive(Clone)]
