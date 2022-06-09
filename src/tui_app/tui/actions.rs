@@ -1,7 +1,10 @@
 use std::ops::Bound;
 use std::str::FromStr;
 
-use matrix_sdk::ruma::events::room::message::{Relation, RoomMessageEventContent};
+use matrix_sdk::ruma::events::{
+    room::message::{Relation, RoomMessageEventContent},
+    AnyMessageEventContent,
+};
 use rlua::{Lua, RegistryKey, UserData, UserDataMethods, Value};
 
 use matrix_sdk::Client;
@@ -286,21 +289,44 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                     };
                     tokio::spawn(async move {
                         m_room
-                            .send(
-                                matrix_sdk::ruma::events::AnyMessageEventContent::RoomMessage(
-                                    content,
-                                ),
-                                None,
-                            )
+                            .send(AnyMessageEventContent::RoomMessage(content), None)
                             .await
                             .unwrap();
                     });
+                    ActionResult::Ok
                 } else {
-                    tracing::error!("can't send message, no joined room");
+                    ActionResult::Error("can't send message, no joined room".to_owned())
                 }
-                ActionResult::Ok
             } else {
                 ActionResult::Noop
+            }
+        } else {
+            ActionResult::Error("No current room".to_owned())
+        }
+    }),
+    ("delete_message", |c| {
+        if let Some(room) = c.state.current_room_state_mut() {
+            if let super::MessageSelection::Specific(selected_id) = &room.tui.selection {
+                if let Some(joined_room) = c.client.get_joined_room(&room.id) {
+                    let client = c.client.clone();
+                    let eid = selected_id.to_owned();
+                    let room_id = joined_room.room_id().to_owned();
+                    tokio::spawn(async move {
+                        let txn_id = uuid::Uuid::new_v4().to_string();
+                        let request =
+                            matrix_sdk::ruma::api::client::r0::redact::redact_event::Request::new(
+                                &room_id, &eid, &txn_id,
+                            );
+                        if let Err(e) = client.send(request, None).await {
+                            tracing::error!("Cannot delete event: {:?}", e);
+                        }
+                    });
+                    ActionResult::Ok
+                } else {
+                    ActionResult::Error("Room not joined".to_owned())
+                }
+            } else {
+                ActionResult::Error("No message selected".to_owned())
             }
         } else {
             ActionResult::Error("No current room".to_owned())
