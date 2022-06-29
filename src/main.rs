@@ -1,6 +1,7 @@
 mod devices;
 mod log;
 mod logout;
+mod search;
 mod timeline;
 mod tui_app;
 mod verification_common;

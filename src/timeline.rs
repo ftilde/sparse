@@ -1,3 +1,4 @@
+use crate::search::Filter;
 use matrix_sdk::ruma::api::client::r0::message::get_message_events::{self, Direction};
 use matrix_sdk::ruma::events::room::encrypted::Relation;
 use matrix_sdk::ruma::events::room::redaction::SyncRoomRedactionEvent;
@@ -12,17 +13,6 @@ use matrix_sdk::{
     Client,
 };
 use std::collections::{HashMap, VecDeque};
-
-#[derive(Clone)]
-pub struct Filter {
-    pub sender_content: String,
-}
-
-impl Filter {
-    fn matches(&self, event: &Event) -> bool {
-        event.sender().as_str().contains(&self.sender_content)
-    }
-}
 
 struct EventSequence {
     index_offset: isize,
