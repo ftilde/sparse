@@ -111,6 +111,8 @@ bind('k', 'normal', cursor_move_up)
 bind('j', 'normal', cursor_move_down)
 bind('x', 'normal', cursor_delete_right)
 bind('X', 'normal', cursor_delete_left)
+bind('a', 'normal', run_all(cursor_move_forward('cell'), push_mode("insert-line")))
+bind('A', 'normal', run_all(cursor_move_forward('line_separator'), push_mode("insert-line")))
 
 __bind_vim_forward_normal('l', 'cell')
 __bind_vim_forward_normal('$', 'line_separator')
