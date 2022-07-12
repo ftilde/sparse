@@ -377,10 +377,11 @@ impl RoomTimelineCache {
                     self.prepend(msg);
                 }
 
-                self.begin_token = Some(batch.end.unwrap());
                 self.begin = if num_events < QUERY_BATCH_SIZE_LIMIT as usize {
+                    self.begin_token = None;
                     CacheEndState::Reached
                 } else {
+                    self.begin_token = Some(batch.end.unwrap());
                     CacheEndState::Open
                 };
             }
