@@ -8,6 +8,7 @@ use crate::timeline::Event;
 pub enum Filter {
     Sender(String),
     Body(String),
+    Not(Box<Filter>),
     And(Vec<Filter>),
     Or(Vec<Filter>),
 }
@@ -17,6 +18,7 @@ enum Token {
     LParen,
     RParen,
     Bar,
+    Exclamation,
     Type(char),
     Text(String),
     Whitespace(String),
@@ -120,6 +122,10 @@ fn tokenize(s: &str) -> impl Iterator<Item = Result<Token, TokenizeError>> + '_ 
                     let _ = chars.next();
                     return Some(Ok(Token::Bar));
                 }
+                '!' => {
+                    let _ = chars.next();
+                    return Some(Ok(Token::Exclamation));
+                }
                 '~' => {
                     let _ = chars.next();
                     return Some(
@@ -206,6 +212,11 @@ fn parse_and(t: &mut &[Token]) -> Result<Filter, String> {
                 let item = parse_from_tokens(t)?;
                 items.push(item);
             }
+            &[Token::Exclamation, ref rest @ ..] => {
+                *t = rest;
+                let item = parse_from_tokens(t)?;
+                items.push(Filter::Not(Box::new(item)));
+            }
             _ => break,
         }
     }
@@ -274,6 +285,7 @@ impl Filter {
                     false
                 }
             }
+            Filter::Not(v) => !v.matches(event),
             Filter::And(v) => v.iter().all(|f| f.matches(event)),
             Filter::Or(v) => v.iter().any(|f| f.matches(event)),
         }
@@ -420,6 +432,37 @@ mod test {
                 Filter::Sender("bla bli".to_owned()),
                 Filter::Sender("foo".to_owned()),
                 Filter::Body("bar oi".to_owned())
+            ]))
+        );
+    }
+    #[test]
+    fn test_parse_not() {
+        assert_eq!(
+            Filter::parse("!foo"),
+            Ok(Filter::Not(Box::new(Filter::Body("foo".to_owned()))))
+        );
+        assert_eq!(
+            Filter::parse("bla !foo"),
+            Ok(Filter::And(vec![
+                Filter::Body("bla".to_owned()),
+                Filter::Not(Box::new(Filter::Body("foo".to_owned())))
+            ]))
+        );
+        assert_eq!(
+            Filter::parse("~bbla !~ffoo"),
+            Ok(Filter::And(vec![
+                Filter::Body("bla".to_owned()),
+                Filter::Not(Box::new(Filter::Sender("foo".to_owned())))
+            ]))
+        );
+        assert_eq!(
+            Filter::parse("~bbla !(~ffoo | ~bbli)"),
+            Ok(Filter::And(vec![
+                Filter::Body("bla".to_owned()),
+                Filter::Not(Box::new(Filter::Or(vec![
+                    Filter::Sender("foo".to_owned()),
+                    Filter::Body("bli".to_owned()),
+                ])))
             ]))
         );
     }
