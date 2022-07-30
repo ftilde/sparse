@@ -33,8 +33,9 @@ impl Filter {
         let tokens = tokenize(s).collect::<Result<Vec<_>, TokenizeError>>();
         let tokens = match tokens {
             Ok(t) => t,
-            Err(TokenizeError::InvalidEscape(r)) => {
-                return Err(format!("Invalid escape expression: {}", &s[r]))
+            Err(TokenizeError::InvalidEscape(b, e)) => {
+                let s = if let Some(e) = e { &s[b..e] } else { &s[b..] };
+                return Err(format!("Invalid escape expression: {}", s));
             }
             Err(TokenizeError::UnfinishedString(r)) => {
                 return Err(format!("Unfinished string: {}", &s[r]))
@@ -83,13 +84,16 @@ fn tok_string(chars: &mut Peekable<CharIndices<'_>>) -> Result<Token, TokenizeEr
                 }
                 '\\' => {
                     let _ = chars.next();
-                    if let Some((j, c)) = chars.next() {
+                    if let Some((_, c)) = chars.next() {
                         match c {
                             'n' => out.push('\n'),
                             't' => out.push('\t'),
                             '\\' => out.push('\\'),
                             '"' => out.push('"'),
-                            _ => return Err(TokenizeError::InvalidEscape(i..=j)), //TODO: not sure if this works for umlauts etc
+                            _ => {
+                                let end = chars.next().map(|(i, _)| i);
+                                return Err(TokenizeError::InvalidEscape(i, end));
+                            }
                         }
                     } else {
                         return Err(TokenizeError::UnfinishedString(begin.0..));
@@ -148,7 +152,7 @@ fn tok_whitespace(chars: &mut Peekable<CharIndices<'_>>) -> Token {
 enum TokenizeError {
     UnfinishedType(std::ops::RangeFrom<usize>),
     UnfinishedString(std::ops::RangeFrom<usize>),
-    InvalidEscape(std::ops::RangeInclusive<usize>),
+    InvalidEscape(usize, Option<usize>),
 }
 
 fn tokenize(s: &str) -> impl Iterator<Item = Result<Token, TokenizeError>> + '_ {
