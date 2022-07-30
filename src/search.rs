@@ -3,14 +3,60 @@ use std::{iter::Peekable, str::CharIndices};
 use matrix_sdk::ruma::events::AnySyncMessageEvent;
 
 use crate::timeline::Event;
+use regex::Regex;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Clone)]
 pub enum Filter {
-    Sender(String),
-    Body(String),
+    Sender(Regex),
+    Body(Regex),
     Not(Box<Filter>),
     And(Vec<Filter>),
     Or(Vec<Filter>),
+}
+impl Filter {
+    pub fn matches(&self, event: &Event) -> bool {
+        match self {
+            Filter::Sender(sender) => sender.is_match(event.sender().as_str()),
+            Filter::Body(body) => {
+                if let Event::Message(AnySyncMessageEvent::RoomMessage(m)) = event {
+                    body.is_match(crate::tui_app::tui::messages::strip_body(m.content.body()))
+                } else {
+                    false
+                }
+            }
+            Filter::Not(v) => !v.matches(event),
+            Filter::And(v) => v.iter().all(|f| f.matches(event)),
+            Filter::Or(v) => v.iter().any(|f| f.matches(event)),
+        }
+    }
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let tokens = tokenize(s).collect::<Result<Vec<_>, TokenizeError>>();
+        let tokens = match tokens {
+            Ok(t) => t,
+            Err(TokenizeError::InvalidEscape(r)) => {
+                return Err(format!("Invalid escape expression: {}", &s[r]))
+            }
+            Err(TokenizeError::UnfinishedString(r)) => {
+                return Err(format!("Unfinished string: {}", &s[r]))
+            }
+            Err(TokenizeError::UnfinishedType(r)) => {
+                return Err(format!("Unfinished filter type: {}", &s[r]))
+            }
+        };
+        let tokens = tokens;
+        let f = parse_from_tokens(&mut &tokens[..])?;
+        let f = f.build()?;
+        Ok(f)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FilterExpression {
+    Sender(String),
+    Body(String),
+    Not(Box<FilterExpression>),
+    And(Vec<FilterExpression>),
+    Or(Vec<FilterExpression>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -153,7 +199,7 @@ fn skip_whitespace(t: &mut &[Token]) {
         }
     }
 }
-fn parse_filter_item(t: &mut &[Token]) -> Result<Filter, String> {
+fn parse_filter_item(t: &mut &[Token]) -> Result<FilterExpression, String> {
     let type_ = match *t {
         &[Token::Type(s), ref rest @ ..] => {
             *t = rest;
@@ -192,13 +238,13 @@ fn parse_filter_item(t: &mut &[Token]) -> Result<Filter, String> {
         };
     }
     match type_ {
-        Some('f') => Ok(Filter::Sender(output)),
-        Some('b') | None => Ok(Filter::Body(output)),
+        Some('f') => Ok(FilterExpression::Sender(output)),
+        Some('b') | None => Ok(FilterExpression::Body(output)),
         Some(o) => Err(format!("Invalid filter type '{}'", o)),
     }
 }
 
-fn parse_and(t: &mut &[Token]) -> Result<Filter, String> {
+fn parse_and(t: &mut &[Token]) -> Result<FilterExpression, String> {
     let mut items = vec![];
     loop {
         skip_whitespace(t);
@@ -215,7 +261,7 @@ fn parse_and(t: &mut &[Token]) -> Result<Filter, String> {
             &[Token::Exclamation, ref rest @ ..] => {
                 *t = rest;
                 let item = parse_from_tokens(t)?;
-                items.push(Filter::Not(Box::new(item)));
+                items.push(FilterExpression::Not(Box::new(item)));
             }
             _ => break,
         }
@@ -223,11 +269,11 @@ fn parse_and(t: &mut &[Token]) -> Result<Filter, String> {
     match items.len() {
         0 => Err(format!("Need at least one filter")),
         1 => Ok(items.pop().unwrap()),
-        _ => Ok(Filter::And(items)),
+        _ => Ok(FilterExpression::And(items)),
     }
 }
 
-fn parse_from_tokens(t: &mut &[Token]) -> Result<Filter, String> {
+fn parse_from_tokens(t: &mut &[Token]) -> Result<FilterExpression, String> {
     if let &[Token::LParen, ref rest @ ..] = *t {
         *t = rest;
         let v = parse_from_tokens(t)?;
@@ -252,43 +298,31 @@ fn parse_from_tokens(t: &mut &[Token]) -> Result<Filter, String> {
     match items.len() {
         0 => Err(format!("Need at least one filter")),
         1 => Ok(items.pop().unwrap()),
-        _ => Ok(Filter::Or(items)),
+        _ => Ok(FilterExpression::Or(items)),
     }
 }
 
-impl Filter {
-    pub fn parse(s: &str) -> Result<Self, String> {
-        let tokens = tokenize(s).collect::<Result<Vec<_>, TokenizeError>>();
-        let tokens = match tokens {
-            Ok(t) => t,
-            Err(TokenizeError::InvalidEscape(r)) => {
-                return Err(format!("Invalid escape expression: {}", &s[r]))
+impl FilterExpression {
+    fn build(self) -> Result<Filter, String> {
+        Ok(match self {
+            FilterExpression::Sender(sender) => {
+                Filter::Sender(Regex::new(&sender).map_err(|e| e.to_string())?)
             }
-            Err(TokenizeError::UnfinishedString(r)) => {
-                return Err(format!("Unfinished string: {}", &s[r]))
+            FilterExpression::Body(body) => {
+                Filter::Body(Regex::new(&body).map_err(|e| e.to_string())?)
             }
-            Err(TokenizeError::UnfinishedType(r)) => {
-                return Err(format!("Unfinished filter type: {}", &s[r]))
-            }
-        };
-        let tokens = tokens;
-        let f = parse_from_tokens(&mut &tokens[..])?;
-        Ok(f)
-    }
-    pub fn matches(&self, event: &Event) -> bool {
-        match self {
-            Filter::Sender(sender) => event.sender().as_str().contains(sender),
-            Filter::Body(body) => {
-                if let Event::Message(AnySyncMessageEvent::RoomMessage(m)) = event {
-                    crate::tui_app::tui::messages::strip_body(m.content.body()).contains(body)
-                } else {
-                    false
-                }
-            }
-            Filter::Not(v) => !v.matches(event),
-            Filter::And(v) => v.iter().all(|f| f.matches(event)),
-            Filter::Or(v) => v.iter().any(|f| f.matches(event)),
-        }
+            FilterExpression::Not(v) => Filter::Not(Box::new(v.build()?)),
+            FilterExpression::And(v) => Filter::And(
+                v.into_iter()
+                    .map(FilterExpression::build)
+                    .collect::<Result<_, _>>()?,
+            ),
+            FilterExpression::Or(v) => Filter::Or(
+                v.into_iter()
+                    .map(FilterExpression::build)
+                    .collect::<Result<_, _>>()?,
+            ),
+        })
     }
 }
 
@@ -330,82 +364,94 @@ mod test {
     }
     #[test]
     fn test_parse_default() {
-        assert_eq!(Filter::parse("foo"), Ok(Filter::Body("foo".to_owned())));
-        assert_eq!(Filter::parse("  foo "), Ok(Filter::Body("foo".to_owned())));
         assert_eq!(
-            Filter::parse(" \"  foo \""),
-            Ok(Filter::Body("  foo ".to_owned()))
+            FilterExpression::parse("foo"),
+            Ok(FilterExpression::Body("foo".to_owned()))
+        );
+        assert_eq!(
+            FilterExpression::parse("  foo "),
+            Ok(FilterExpression::Body("foo".to_owned()))
+        );
+        assert_eq!(
+            FilterExpression::parse(" \"  foo \""),
+            Ok(FilterExpression::Body("  foo ".to_owned()))
         );
     }
     #[test]
     fn test_parse_quote() {
-        //assert_eq!(Filter::parse("\"foo\""), Ok(Filter::Body("foo".to_owned())));
-        //assert_eq!(
-        //    Filter::parse("\"~foo\""),
-        //    Ok(Filter::Body("~foo".to_owned()))
-        //);
-        //assert_eq!(
-        //    Filter::parse("~b \"~foo\""),
-        //    Ok(Filter::Body("~foo".to_owned()))
-        //);
-        //assert_eq!(
-        //    Filter::parse("~b \"fo!o\""),
-        //    Ok(Filter::Body("fo!o".to_owned()))
-        //);
         assert_eq!(
-            Filter::parse(r#"~b "\"" "#),
-            Ok(Filter::Body("\"".to_owned()))
+            FilterExpression::parse("\"foo\""),
+            Ok(FilterExpression::Body("foo".to_owned()))
+        );
+        assert_eq!(
+            FilterExpression::parse("\"~foo\""),
+            Ok(FilterExpression::Body("~foo".to_owned()))
+        );
+        assert_eq!(
+            FilterExpression::parse("~b \"~foo\""),
+            Ok(FilterExpression::Body("~foo".to_owned()))
+        );
+        assert_eq!(
+            FilterExpression::parse("~b \"fo!o\""),
+            Ok(FilterExpression::Body("fo!o".to_owned()))
+        );
+        assert_eq!(
+            FilterExpression::parse(r#"~b "\"" "#),
+            Ok(FilterExpression::Body("\"".to_owned()))
         );
     }
     #[test]
     fn test_parse_body() {
-        assert_eq!(Filter::parse("~b foo"), Ok(Filter::Body("foo".to_owned())));
         assert_eq!(
-            Filter::parse("  ~bfoo "),
-            Ok(Filter::Body("foo".to_owned()))
+            FilterExpression::parse("~b foo"),
+            Ok(FilterExpression::Body("foo".to_owned()))
         );
         assert_eq!(
-            Filter::parse(" ~b\"  foo \""),
-            Ok(Filter::Body("  foo ".to_owned()))
+            FilterExpression::parse("  ~bfoo "),
+            Ok(FilterExpression::Body("foo".to_owned()))
+        );
+        assert_eq!(
+            FilterExpression::parse(" ~b\"  foo \""),
+            Ok(FilterExpression::Body("  foo ".to_owned()))
         );
     }
     #[test]
     fn test_parse_sender() {
         assert_eq!(
-            Filter::parse("~f foo"),
-            Ok(Filter::Sender("foo".to_owned()))
+            FilterExpression::parse("~f foo"),
+            Ok(FilterExpression::Sender("foo".to_owned()))
         );
         assert_eq!(
-            Filter::parse("  ~ffoo "),
-            Ok(Filter::Sender("foo".to_owned()))
+            FilterExpression::parse("  ~ffoo "),
+            Ok(FilterExpression::Sender("foo".to_owned()))
         );
         assert_eq!(
-            Filter::parse(" ~f\"  foo \""),
-            Ok(Filter::Sender("  foo ".to_owned()))
+            FilterExpression::parse(" ~f\"  foo \""),
+            Ok(FilterExpression::Sender("  foo ".to_owned()))
         );
     }
     #[test]
     fn test_parse_and() {
-        //assert_eq!(
-        //    Filter::parse("bla ~f foo"),
-        //    Ok(Filter::And(vec![
-        //        Filter::Body("bla".to_owned()),
-        //        Filter::Sender("foo".to_owned())
-        //    ]))
-        //);
-        //assert_eq!(
-        //    Filter::parse("~f bla ~f foo"),
-        //    Ok(Filter::And(vec![
-        //        Filter::Sender("bla".to_owned()),
-        //        Filter::Sender("foo".to_owned())
-        //    ]))
-        //);
         assert_eq!(
-            Filter::parse("~f bla ~f \"foo\" ~bbar oi"),
-            Ok(Filter::And(vec![
-                Filter::Sender("bla".to_owned()),
-                Filter::Sender("foo".to_owned()),
-                Filter::Body("bar oi".to_owned())
+            FilterExpression::parse("bla ~f foo"),
+            Ok(FilterExpression::And(vec![
+                FilterExpression::Body("bla".to_owned()),
+                FilterExpression::Sender("foo".to_owned())
+            ]))
+        );
+        assert_eq!(
+            FilterExpression::parse("~f bla ~f foo"),
+            Ok(FilterExpression::And(vec![
+                FilterExpression::Sender("bla".to_owned()),
+                FilterExpression::Sender("foo".to_owned())
+            ]))
+        );
+        assert_eq!(
+            FilterExpression::parse("~f bla ~f \"foo\" ~bbar oi"),
+            Ok(FilterExpression::And(vec![
+                FilterExpression::Sender("bla".to_owned()),
+                FilterExpression::Sender("foo".to_owned()),
+                FilterExpression::Body("bar oi".to_owned())
             ]))
         );
     }
@@ -413,55 +459,57 @@ mod test {
     #[test]
     fn test_parse_or() {
         assert_eq!(
-            Filter::parse("bla | ~f foo"),
-            Ok(Filter::Or(vec![
-                Filter::Body("bla".to_owned()),
-                Filter::Sender("foo".to_owned())
+            FilterExpression::parse("bla | ~f foo"),
+            Ok(FilterExpression::Or(vec![
+                FilterExpression::Body("bla".to_owned()),
+                FilterExpression::Sender("foo".to_owned())
             ]))
         );
         assert_eq!(
-            Filter::parse("~f bla | ~f foo"),
-            Ok(Filter::Or(vec![
-                Filter::Sender("bla".to_owned()),
-                Filter::Sender("foo".to_owned())
+            FilterExpression::parse("~f bla | ~f foo"),
+            Ok(FilterExpression::Or(vec![
+                FilterExpression::Sender("bla".to_owned()),
+                FilterExpression::Sender("foo".to_owned())
             ]))
         );
         assert_eq!(
-            Filter::parse("~f bla bli | ~f \"foo\" | ~bbar oi"),
-            Ok(Filter::Or(vec![
-                Filter::Sender("bla bli".to_owned()),
-                Filter::Sender("foo".to_owned()),
-                Filter::Body("bar oi".to_owned())
+            FilterExpression::parse("~f bla bli | ~f \"foo\" | ~bbar oi"),
+            Ok(FilterExpression::Or(vec![
+                FilterExpression::Sender("bla bli".to_owned()),
+                FilterExpression::Sender("foo".to_owned()),
+                FilterExpression::Body("bar oi".to_owned())
             ]))
         );
     }
     #[test]
     fn test_parse_not() {
         assert_eq!(
-            Filter::parse("!foo"),
-            Ok(Filter::Not(Box::new(Filter::Body("foo".to_owned()))))
+            FilterExpression::parse("!foo"),
+            Ok(FilterExpression::Not(Box::new(FilterExpression::Body(
+                "foo".to_owned()
+            ))))
         );
         assert_eq!(
-            Filter::parse("bla !foo"),
-            Ok(Filter::And(vec![
-                Filter::Body("bla".to_owned()),
-                Filter::Not(Box::new(Filter::Body("foo".to_owned())))
+            FilterExpression::parse("bla !foo"),
+            Ok(FilterExpression::And(vec![
+                FilterExpression::Body("bla".to_owned()),
+                FilterExpression::Not(Box::new(FilterExpression::Body("foo".to_owned())))
             ]))
         );
         assert_eq!(
-            Filter::parse("~bbla !~ffoo"),
-            Ok(Filter::And(vec![
-                Filter::Body("bla".to_owned()),
-                Filter::Not(Box::new(Filter::Sender("foo".to_owned())))
+            FilterExpression::parse("~bbla !~ffoo"),
+            Ok(FilterExpression::And(vec![
+                FilterExpression::Body("bla".to_owned()),
+                FilterExpression::Not(Box::new(FilterExpression::Sender("foo".to_owned())))
             ]))
         );
         assert_eq!(
-            Filter::parse("~bbla !(~ffoo | ~bbli)"),
-            Ok(Filter::And(vec![
-                Filter::Body("bla".to_owned()),
-                Filter::Not(Box::new(Filter::Or(vec![
-                    Filter::Sender("foo".to_owned()),
-                    Filter::Body("bli".to_owned()),
+            FilterExpression::parse("~bbla !(~ffoo | ~bbli)"),
+            Ok(FilterExpression::And(vec![
+                FilterExpression::Body("bla".to_owned()),
+                FilterExpression::Not(Box::new(FilterExpression::Or(vec![
+                    FilterExpression::Sender("foo".to_owned()),
+                    FilterExpression::Body("bli".to_owned()),
                 ])))
             ]))
         );
@@ -469,16 +517,16 @@ mod test {
     #[test]
     fn test_parse_complex() {
         assert_eq!(
-            Filter::parse("~f \"bla ~!()\"bli"),
-            Ok(Filter::Sender("bla ~!()bli".to_owned()))
+            FilterExpression::parse("~f \"bla ~!()\"bli"),
+            Ok(FilterExpression::Sender("bla ~!()bli".to_owned()))
         );
         assert_eq!(
-            Filter::parse("~f bla | (asdf ~b foo)"),
-            Ok(Filter::Or(vec![
-                Filter::Sender("bla".to_owned()),
-                Filter::And(vec![
-                    Filter::Body("asdf".to_owned()),
-                    Filter::Body("foo".to_owned()),
+            FilterExpression::parse("~f bla | (asdf ~b foo)"),
+            Ok(FilterExpression::Or(vec![
+                FilterExpression::Sender("bla".to_owned()),
+                FilterExpression::And(vec![
+                    FilterExpression::Body("asdf".to_owned()),
+                    FilterExpression::Body("foo".to_owned()),
                 ])
             ]))
         );
