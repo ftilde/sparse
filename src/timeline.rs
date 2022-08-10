@@ -365,10 +365,13 @@ impl RoomTimelineCache {
                     self.append(msg);
                 }
 
-                self.end_token = Some(batch.end.unwrap());
                 self.end = if num_events < QUERY_BATCH_SIZE_LIMIT as usize {
+                    // For some reason the /messages endpoint returns no end token when we reach
+                    // the "newest" end of the timeline. For this reason we cannot set an end_token
+                    // here. ugh...
                     CacheEndState::Reached
                 } else {
+                    self.end_token = Some(batch.end.unwrap());
                     CacheEndState::Open
                 };
             }
