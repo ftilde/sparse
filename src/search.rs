@@ -30,22 +30,7 @@ impl Filter {
         }
     }
     pub fn parse(s: &str) -> Result<Self, String> {
-        let tokens = tokenize(s).collect::<Result<Vec<_>, TokenizeError>>();
-        let tokens = match tokens {
-            Ok(t) => t,
-            Err(TokenizeError::InvalidEscape(b, e)) => {
-                let s = if let Some(e) = e { &s[b..e] } else { &s[b..] };
-                return Err(format!("Invalid escape expression: {}", s));
-            }
-            Err(TokenizeError::UnfinishedString(r)) => {
-                return Err(format!("Unfinished string: {}", &s[r]))
-            }
-            Err(TokenizeError::UnfinishedType(r)) => {
-                return Err(format!("Unfinished filter type: {}", &s[r]))
-            }
-        };
-        let tokens = tokens;
-        let f = parse_from_tokens(&mut &tokens[..])?;
+        let f = FilterExpression::parse(s)?;
         let f = f.build()?;
         Ok(f)
     }
@@ -331,6 +316,24 @@ impl FilterExpression {
                     .collect::<Result<_, _>>()?,
             ),
         })
+    }
+    fn parse(s: &str) -> Result<Self, String> {
+        let tokens = tokenize(s).collect::<Result<Vec<_>, TokenizeError>>();
+        let tokens = match tokens {
+            Ok(t) => t,
+            Err(TokenizeError::InvalidEscape(b, e)) => {
+                let s = if let Some(e) = e { &s[b..e] } else { &s[b..] };
+                return Err(format!("Invalid escape expression: {}", s));
+            }
+            Err(TokenizeError::UnfinishedString(r)) => {
+                return Err(format!("Unfinished string: {}", &s[r]))
+            }
+            Err(TokenizeError::UnfinishedType(r)) => {
+                return Err(format!("Unfinished filter type: {}", &s[r]))
+            }
+        };
+        let tokens = tokens;
+        parse_from_tokens(&mut &tokens[..])
     }
 }
 
