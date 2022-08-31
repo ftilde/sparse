@@ -3,7 +3,7 @@ use std::{iter::Peekable, str::CharIndices};
 use matrix_sdk::ruma::events::AnySyncMessageEvent;
 
 use crate::timeline::Event;
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 
 #[derive(Clone)]
 pub enum Filter {
@@ -306,15 +306,19 @@ fn parse_from_tokens(t: &mut &[Token]) -> Result<FilterExpression, String> {
     }
 }
 
+fn build_regex(s: &str) -> Result<Regex, String> {
+    let mut b = RegexBuilder::new(s);
+    if s.to_lowercase() == s {
+        b.case_insensitive(true);
+    }
+    b.build().map_err(|e| e.to_string())
+}
+
 impl FilterExpression {
     fn build(self) -> Result<Filter, String> {
         Ok(match self {
-            FilterExpression::Sender(sender) => {
-                Filter::Sender(Regex::new(&sender).map_err(|e| e.to_string())?)
-            }
-            FilterExpression::Body(body) => {
-                Filter::Body(Regex::new(&body).map_err(|e| e.to_string())?)
-            }
+            FilterExpression::Sender(sender) => Filter::Sender(build_regex(&sender)?),
+            FilterExpression::Body(body) => Filter::Body(build_regex(&body)?),
             FilterExpression::Not(v) => Filter::Not(Box::new(v.build()?)),
             FilterExpression::And(v) => Filter::And(
                 v.into_iter()
