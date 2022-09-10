@@ -570,7 +570,7 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             ActionResult::Error("No current room".to_owned())
         }
     }),
-    ("finish_auxline", |c| {
+    ("accept_auxline", |c| {
         c.state.tui.aux_line_state.current_mut().finish_line();
         ActionResult::Ok
     }),

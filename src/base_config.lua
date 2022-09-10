@@ -45,6 +45,19 @@ run_all = function(...)
     end;
 end
 
+function finish_auxline(run_on_content, run_on_empty)
+    return function(c)
+        content = c:get_auxline_content()
+        res = res_ok()
+        if(content ~= "") then
+            c:accept_auxline()
+            res = run_on_content(c, content)
+        end
+        c:pop_mode()
+        return res
+    end
+end
+
 function vim_delete(from, to)
     return function(c)
         content = c:cursor_yank(from, to)
@@ -188,15 +201,7 @@ bind('<Return>', 'roomfilterunread', run_all(force_room_selection, pop_mode))
 -- command mode
 on_enter('command', run_all(switch_auxline('command'), set_auxline_prompt(':')))
 bind('<Esc>', 'command', run_first(clear_error_message, run_all(clear_auxline, pop_mode)))
-bind('<Return>', 'command', function(c)
-    content = c:get_auxline_content()
-    if(content ~= "") then
-        c:finish_auxline()
-        c:run(content)
-    end
-    c:pop_mode()
-    return res_ok()
-end)
+bind('<Return>', 'command', finish_auxline(function(c, content) return c:run(content) end))
 
 -- limit mode
 define_mode('limit', 'command')
@@ -205,15 +210,37 @@ bind('<Esc>', 'limit', run_first(clear_error_message, run_all(clear_auxline, pop
 bind('<C-c>', 'limit', clear_auxline)
 bind('<Return>', 'limit', function(c)
     content = c:get_auxline_content()
+    res = res_ok()
     if(content ~= "") then
-        c:finish_auxline()
-        c:set_filter(content)
+        c:accept_auxline()
+        res = c:set_filter(content)
     else
         c:clear_filter(content)
     end
     c:pop_mode()
-    return res_ok()
+    return res
 end)
+
+-- send-file mode
+define_mode('send-file', 'command')
+on_enter('send-file', run_all(switch_auxline('send-file'), set_auxline_prompt('Send file: ')))
+bind('<Esc>', 'send-file', run_first(clear_error_message, run_all(clear_auxline, pop_mode)))
+bind('<C-c>', 'send-file', clear_auxline)
+bind('<Return>', 'send-file', finish_auxline(function(c, content) return c:send_file(content) end))
+
+-- save-file mode
+define_mode('save-file', 'command')
+on_enter('save-file', run_all(switch_auxline('save-file'), set_auxline_prompt('Save file as: ')))
+bind('<Esc>', 'save-file', run_first(clear_error_message, run_all(clear_auxline, pop_mode)))
+bind('<C-c>', 'save-file', clear_auxline)
+bind('<Return>', 'save-file', finish_auxline(function(c, content) return c:save_file(content) end))
+
+-- react mode
+define_mode('react', 'command')
+on_enter('react', run_all(switch_auxline('react'), set_auxline_prompt('React with: ')))
+bind('<Esc>', 'react', run_first(clear_error_message, run_all(clear_auxline, pop_mode)))
+bind('<C-c>', 'react', clear_auxline)
+bind('<Return>', 'react', finish_auxline(function(c, content) return c:react(content) end))
 
 -- visual mode
 define_mode('visual', 'normal')
@@ -221,9 +248,11 @@ bind('k', 'visual', select_prev_message)
 bind('j', 'visual', select_next_message)
 bind('f', 'visual', follow_reply)
 bind('r', 'visual', run_all(start_reply, deselect_message, switch_mode("insert-line")))
+bind('R', 'visual', push_mode('react'))
 bind('c', 'visual', run_all(start_edit, deselect_message, switch_mode("insert-line")))
+bind('s', 'visual', push_mode('save-file'))
+bind(':', 'visual', push_mode('command'))
 bind('<Esc>', 'visual', run_all(deselect_message, pop_mode))
-bind(':', 'visual', push_mode("command"))
 bind('<Return>', 'visual', open_selected_message)
 bind('y', 'visual', function(c)
     content = c:get_message_content()
