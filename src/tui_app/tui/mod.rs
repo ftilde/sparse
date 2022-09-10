@@ -1,6 +1,5 @@
 use matrix_sdk::Client;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io::stdout;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -153,7 +152,7 @@ fn key_action_behavior<'a>(
             }
             KeyMapFunctionResult::Found(action) => {
                 use crate::tui_app::tui::actions::ActionResult;
-                match c.command_environment.run_action(action, c) {
+                match c.run_action(action) {
                     Ok(ActionResult::Ok | ActionResult::Noop) => {}
                     Ok(ActionResult::Error(e)) => {
                         c.state.tui.last_error_message = Some(e);
@@ -537,14 +536,17 @@ impl Mode {
             Mode::Custom(_, m) => *m,
         }
     }
+    pub fn as_str(&self) -> &str {
+        match self {
+            Mode::Builtin(m) => m.as_str(),
+            Mode::Custom(s, _) => s,
+        }
+    }
 }
 
 impl std::fmt::Display for Mode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Mode::Builtin(m) => write!(f, "{}", m),
-            Mode::Custom(s, _) => write!(f, "{}", s),
-        }
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -560,6 +562,18 @@ pub enum BuiltinMode {
 impl std::default::Default for Mode {
     fn default() -> Self {
         Mode::Builtin(BuiltinMode::Normal)
+    }
+}
+
+impl BuiltinMode {
+    fn as_str(&self) -> &str {
+        match self {
+            BuiltinMode::Normal => "normal",
+            BuiltinMode::Insert => "insert",
+            BuiltinMode::Command => "command",
+            BuiltinMode::RoomFilter => "roomfilter",
+            BuiltinMode::RoomFilterUnread => "roomfilterunread",
+        }
     }
 }
 
@@ -580,43 +594,6 @@ impl FromStr for BuiltinMode {
 
 impl std::fmt::Display for BuiltinMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            BuiltinMode::Normal => "normal",
-            BuiltinMode::Insert => "insert",
-            BuiltinMode::Command => "command",
-            BuiltinMode::RoomFilter => "roomfilter",
-            BuiltinMode::RoomFilterUnread => "roomfilterunread",
-        };
-        write!(f, "{}", s)
-    }
-}
-
-#[derive(Clone)]
-pub struct ModeSet {
-    custom: HashMap<String, BuiltinMode>,
-}
-
-impl ModeSet {
-    pub fn new() -> Self {
-        ModeSet {
-            custom: HashMap::new(),
-        }
-    }
-    pub fn define(&mut self, name: String, base: BuiltinMode) -> Result<(), ()> {
-        if self.get(&name).is_none() {
-            self.custom.insert(name, base);
-            Ok(())
-        } else {
-            Err(())
-        }
-    }
-    pub fn get(&self, name: &str) -> Option<Mode> {
-        if let Ok(m) = BuiltinMode::from_str(name) {
-            Some(Mode::Builtin(m))
-        } else if let Some(m) = self.custom.get(name) {
-            Some(Mode::Custom(name.to_string(), *m))
-        } else {
-            None
-        }
+        write!(f, "{}", self.as_str())
     }
 }

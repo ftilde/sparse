@@ -15,13 +15,13 @@ use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
 
 use cli_clipboard::ClipboardProvider;
 
-use super::super::State;
+use super::{super::State, Mode};
 use super::{BuiltinMode, EventDetail, SendMessageType, Tasks};
 use crate::config::Config;
 use crate::search::Filter;
 use crate::timeline::Event;
 
-pub struct KeyAction<'a>(pub &'a RegistryKey);
+pub struct Action<'a>(pub &'a RegistryKey);
 
 pub struct CommandContext<'a> {
     pub client: &'a Client,
@@ -49,6 +49,16 @@ impl<'a> CommandContext<'a> {
                 };
                 lua_ctx.load(cmd).eval()?;
                 f.call::<_, ActionResult>(c)
+            })
+        })
+    }
+    pub fn run_action(&mut self, action: Action) -> rlua::Result<ActionResult> {
+        self.command_environment.lua.context(|lua_ctx| {
+            lua_ctx.scope(|scope| {
+                let c = scope.create_nonstatic_userdata(self)?;
+                let action: rlua::Function = lua_ctx.registry_value(action.0).unwrap();
+                let res = action.call::<_, ActionResult>(c);
+                res
             })
         })
     }
@@ -209,20 +219,6 @@ pub struct CommandEnvironment {
 impl CommandEnvironment {
     pub fn new(lua: Lua) -> Self {
         CommandEnvironment { lua }
-    }
-    pub fn run_action<'a>(
-        &'a self,
-        action: KeyAction<'a>,
-        c: &mut CommandContext,
-    ) -> rlua::Result<ActionResult> {
-        self.lua.context(|lua_ctx| {
-            lua_ctx.scope(|scope| {
-                let c = scope.create_nonstatic_userdata(c)?;
-                let action: rlua::Function = lua_ctx.registry_value(action.0).unwrap();
-                let res = action.call::<_, ActionResult>(c);
-                res
-            })
-        })
     }
 }
 
@@ -561,9 +557,17 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             ActionResult::Noop
         }
     }),
-    ("pop_mode", |c| match c.state.tui.pop_mode() {
-        Ok(()) => ActionResult::Ok,
-        Err(()) => ActionResult::Error("Cannot pop last element from mode stack.".to_owned()),
+    ("pop_mode", |c| {
+        if c.state.tui.mode_stack.len() > 1 {
+            run_on_mode_leave(c.state.tui.current_mode().clone(), c);
+        }
+        match c.state.tui.pop_mode() {
+            Ok(()) => {
+                run_on_mode_enter(c.state.tui.current_mode().clone(), c);
+                ActionResult::Ok
+            }
+            Err(()) => ActionResult::Error("Cannot pop last element from mode stack.".to_owned()),
+        }
     }),
     ("clear_timeline_cache", |c| {
         if let Some(r) = c.state.current_room_state_mut() {
@@ -604,12 +608,25 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
     }),
     ("switch_mode", |c, s| match c.config.modes.get(&s) {
         None => ActionResult::Error(format!("'{}' is not a mode", s)),
-        Some(m) => c.state.tui.switch_mode(m).into(),
+        Some(new) => {
+            let current = c.state.tui.current_mode().clone();
+            let change = current != new;
+            if change {
+                run_on_mode_leave(current, c);
+            }
+            let res = c.state.tui.switch_mode(new.clone()).into();
+            if change {
+                run_on_mode_enter(new, c);
+            }
+            res
+        }
     }),
     ("push_mode", |c, s| match c.config.modes.get(&s) {
         None => ActionResult::Error(format!("'{}' is not a mode", s)),
-        Some(m) => {
-            c.state.tui.push_mode(m);
+        Some(new) => {
+            run_on_mode_leave(c.state.tui.current_mode().clone(), c);
+            c.state.tui.push_mode(new.clone());
+            run_on_mode_enter(new, c);
             ActionResult::Ok
         }
     }),
@@ -822,5 +839,33 @@ fn save_file(
             ActionResult::Ok
         }
         Err(e) => ActionResult::Error(format!("Cannot open file for sending: {:?}", e)),
+    }
+}
+
+fn run_on_mode_enter(mode: Mode, c: &mut CommandContext) {
+    if let Some(action) = c.config.modes.get_on_enter(&mode) {
+        match c.run_action(action) {
+            Ok(ActionResult::Ok | ActionResult::Noop) => {}
+            Ok(ActionResult::Error(e)) => {
+                c.state.tui.last_error_message = Some(e);
+            }
+            Err(e) => {
+                c.state.tui.last_error_message = Some(format!("{}", e));
+            }
+        }
+    }
+}
+
+fn run_on_mode_leave(mode: Mode, c: &mut CommandContext) {
+    if let Some(action) = c.config.modes.get_on_leave(&mode) {
+        match c.run_action(action) {
+            Ok(ActionResult::Ok | ActionResult::Noop) => {}
+            Ok(ActionResult::Error(e)) => {
+                c.state.tui.last_error_message = Some(e);
+            }
+            Err(e) => {
+                c.state.tui.last_error_message = Some(format!("{}", e));
+            }
+        }
     }
 }

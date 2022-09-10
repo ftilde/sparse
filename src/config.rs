@@ -7,11 +7,68 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::tui_app::tui::{
-    actions::{
-        ActionResult, CommandEnvironment, KeyAction, ACTIONS_ARGS_NONE, ACTIONS_ARGS_STRING,
-    },
-    BuiltinMode, Mode, ModeSet,
+    actions::{Action, ActionResult, CommandEnvironment, ACTIONS_ARGS_NONE, ACTIONS_ARGS_STRING},
+    BuiltinMode, Mode,
 };
+
+pub struct ModeSet {
+    custom: HashMap<String, BuiltinMode>,
+    on_enter: HashMap<String, RegistryKey>,
+    on_leave: HashMap<String, RegistryKey>,
+}
+
+impl ModeSet {
+    pub fn new() -> Self {
+        ModeSet {
+            custom: HashMap::new(),
+            on_enter: HashMap::new(),
+            on_leave: HashMap::new(),
+        }
+    }
+    pub fn define(&mut self, name: String, base: BuiltinMode) -> Result<(), ()> {
+        if self.get(&name).is_none() {
+            self.custom.insert(name, base);
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+    pub fn get(&self, name: &str) -> Option<Mode> {
+        if let Ok(m) = BuiltinMode::from_str(name) {
+            Some(Mode::Builtin(m))
+        } else if let Some(m) = self.custom.get(name) {
+            Some(Mode::Custom(name.to_string(), *m))
+        } else {
+            None
+        }
+    }
+    pub fn define_on_enter<'lua>(
+        &mut self,
+        mode: &Mode,
+        lua: &rlua::Context<'lua>,
+        f: rlua::Function<'lua>,
+    ) -> rlua::Result<()> {
+        let k = lua.create_registry_value(f)?;
+        self.on_enter.insert(mode.to_string(), k);
+        Ok(())
+    }
+    pub fn get_on_enter(&self, mode: &Mode) -> Option<Action> {
+        self.on_enter.get(mode.as_str()).map(Action)
+    }
+    pub fn define_on_leave<'lua>(
+        &mut self,
+        mode: &Mode,
+        lua: &rlua::Context<'lua>,
+        f: rlua::Function<'lua>,
+    ) -> rlua::Result<()> {
+        let k = lua.create_registry_value(f)?;
+        self.on_enter.insert(mode.to_string(), k);
+        Ok(())
+    }
+    pub fn get_on_leave(&self, mode: &Mode) -> Option<Action> {
+        self.on_leave.get(mode.as_str()).map(Action)
+    }
+}
 
 const DEFAULT_OPEN_PROG: &str = "xdg-open";
 
@@ -20,7 +77,7 @@ use unsegen::input::Key;
 pub enum KeyMapFunctionResult<'a> {
     IsPrefix(Keys),
     FoundPrefix(Keys),
-    Found(KeyAction<'a>),
+    Found(Action<'a>),
     NotFound,
 }
 
@@ -70,7 +127,7 @@ impl KeyMap {
 
     pub fn find<'a>(&'a self, keys: &Keys) -> KeyMapFunctionResult<'a> {
         if let Some(f) = self.0.get(keys.0.iter()) {
-            return KeyMapFunctionResult::Found(KeyAction(f));
+            return KeyMapFunctionResult::Found(Action(f));
         }
         let prefix_nodes = self.0.get_prefix_nodes(keys.0.iter());
         if let Some(longest_prefix) = prefix_nodes.last() {
@@ -289,7 +346,7 @@ pub struct Config {
     pub file_open_program: String,
     pub url_open_program: String,
     pub keymaps: Arc<KeyMaps>,
-    pub modes: ModeSet,
+    pub modes: Arc<ModeSet>,
 }
 
 impl Config {
@@ -377,7 +434,7 @@ impl ConfigBuilder {
                 file_open_program: self.file_open_program,
                 url_open_program: self.url_open_program,
                 keymaps: Arc::new(KeyMaps(self.keymaps)),
-                modes: self.modes,
+                modes: Arc::new(self.modes),
             },
             CommandEnvironment::new(self.lua),
         ))
@@ -423,6 +480,32 @@ impl ConfigBuilder {
                             modes.define(name.clone(), mode).map_err(|_e| {
                                 rlua::Error::RuntimeError(format!("Mode '{}' already exists", name))
                             })
+                        },
+                    )?,
+                )?;
+
+                globals.set(
+                    "on_enter",
+                    scope.create_function_mut(
+                        |lua_ctx, (name, fun): (String, rlua::Function)| {
+                            let mut modes = modes.borrow_mut();
+                            let mode = modes.get(&name).ok_or_else(|| {
+                                rlua::Error::RuntimeError(format!("No such mode '{}'", name))
+                            })?;
+                            modes.define_on_enter(&mode, &lua_ctx, fun)
+                        },
+                    )?,
+                )?;
+
+                globals.set(
+                    "on_leave",
+                    scope.create_function_mut(
+                        |lua_ctx, (name, fun): (String, rlua::Function)| {
+                            let mut modes = modes.borrow_mut();
+                            let mode = modes.get(&name).ok_or_else(|| {
+                                rlua::Error::RuntimeError(format!("No such mode '{}'", name))
+                            })?;
+                            modes.define_on_leave(&mode, &lua_ctx, fun)
                         },
                     )?,
                 )?;
