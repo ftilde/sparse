@@ -1,5 +1,6 @@
 use matrix_sdk::Client;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::stdout;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -120,12 +121,43 @@ impl Scrollable for RoomSelectionHistory {
     }
 }
 
+pub struct AuxLineState {
+    states: HashMap<String, PromptLine>,
+    current: String,
+}
+
+impl AuxLineState {
+    fn new() -> Self {
+        let s = AuxLineState {
+            states: HashMap::new(),
+            current: "".to_string(),
+        };
+
+        s
+    }
+
+    fn select(&mut self, identifier: String) {
+        self.current = identifier;
+        self.states
+            .entry(self.current.clone())
+            .or_insert_with(|| PromptLine::with_prompt("".to_string()));
+    }
+
+    fn current(&self) -> &PromptLine {
+        self.states.get(&self.current).unwrap()
+    }
+
+    fn current_mut(&mut self) -> &mut PromptLine {
+        self.states.get_mut(&self.current).unwrap()
+    }
+}
+
 pub struct TuiState {
     pub room_selection: RoomSelectionHistory,
     pub event_detail: EventDetail,
     mode_stack: Vec<Mode>, // Invariant: always at least one element
     room_filter_line: LineEdit,
-    command_line: PromptLine,
+    aux_line_state: AuxLineState,
     previous_keys: Keys,
     last_error_message: Option<String>,
 }
@@ -175,7 +207,7 @@ impl TuiState {
             event_detail: EventDetail::default(),
             mode_stack: vec![Mode::default()],
             room_filter_line: LineEdit::new(),
-            command_line: PromptLine::with_prompt(":".to_owned()),
+            aux_line_state: AuxLineState::new(),
             previous_keys: Keys(Vec::new()),
             last_error_message: None,
         };
@@ -196,9 +228,6 @@ impl TuiState {
             )
         {
             let _ = self.room_filter_line.clear();
-        }
-        if !matches!(new, BuiltinMode::Command) && matches!(previous, BuiltinMode::Command) {
-            let _ = self.command_line.clear();
         }
     }
     fn switch_mode(&mut self, mode: Mode) -> OperationResult {
@@ -313,7 +342,7 @@ fn bottom_bar<'a>(tui_state: &'a TuiState) -> impl Widget + 'a {
         tui_state.current_mode().builtin_mode(),
         BuiltinMode::Command
     ) {
-        hlayout = hlayout.widget(tui_state.command_line.as_widget())
+        hlayout = hlayout.widget(tui_state.aux_line_state.current().as_widget())
     }
 
     hlayout = hlayout
@@ -452,14 +481,14 @@ pub async fn run_tui(
                         BuiltinMode::Command => {
                             input
                                 .chain(
-                                    EditBehavior::new(&mut state.tui.command_line)
+                                    EditBehavior::new(state.tui.aux_line_state.current_mut())
                                         .delete_forwards_on(Key::Delete)
                                         .delete_backwards_on(Key::Backspace)
                                         .left_on(Key::Left)
                                         .right_on(Key::Right),
                                 )
                                 .chain(
-                                    ScrollBehavior::new(&mut state.tui.command_line)
+                                    ScrollBehavior::new(state.tui.aux_line_state.current_mut())
                                         .backwards_on(Key::Up)
                                         .forwards_on(Key::Down),
                                 );

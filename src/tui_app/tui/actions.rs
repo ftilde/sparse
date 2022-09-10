@@ -114,6 +114,10 @@ impl UserData for &mut CommandContext<'_> {
             }
         });
 
+        methods.add_method_mut("get_auxline_content", move |_, this, _: ()| {
+            Ok(this.state.tui.aux_line_state.current().get().to_owned())
+        });
+
         methods.add_method_mut(
             "cursor_move_forward",
             move |_, this, element: LuaTextElement| {
@@ -546,17 +550,6 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     ("cursor_delete_right", |c| {
         with_msg_edit(c, |e| e.delete_forwards())
     }),
-    ("run_command", |c| {
-        if !c.state.tui.command_line.get().is_empty() {
-            let cmd = c.state.tui.command_line.finish_line().to_owned();
-            match c.run_command(&cmd) {
-                Ok(r) => r,
-                Err(e) => ActionResult::Error(format!("{}", e)),
-            }
-        } else {
-            ActionResult::Noop
-        }
-    }),
     ("pop_mode", |c| {
         if c.state.tui.mode_stack.len() > 1 {
             run_on_mode_leave(c.state.tui.current_mode().clone(), c);
@@ -577,6 +570,13 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             ActionResult::Error("No current room".to_owned())
         }
     }),
+    ("finish_auxline", |c| {
+        c.state.tui.aux_line_state.current_mut().finish_line();
+        ActionResult::Ok
+    }),
+    ("clear_auxline", |c| {
+        c.state.tui.aux_line_state.current_mut().clear().into()
+    }),
 ];
 
 pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
@@ -594,7 +594,7 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
             }
             BuiltinMode::Command => {
                 for ch in s.chars() {
-                    c.state.tui.command_line.write(ch).unwrap();
+                    c.state.tui.aux_line_state.current_mut().write(ch).unwrap();
                 }
                 ActionResult::Ok
             }
@@ -745,6 +745,18 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
         } else {
             ActionResult::Error("No current room".to_owned())
         }
+    }),
+    ("switch_auxline", |c, identifier| {
+        c.state.tui.aux_line_state.select(identifier);
+        ActionResult::Ok
+    }),
+    ("set_auxline_prompt", |c, prompt| {
+        c.state.tui.aux_line_state.current_mut().set_prompt(prompt);
+        ActionResult::Ok
+    }),
+    ("run", |c, cmd| match c.run_command(&cmd) {
+        Ok(r) => r,
+        Err(e) => ActionResult::Error(format!("{}", e)),
     }),
 ];
 
