@@ -288,6 +288,7 @@ impl<F: Fn(Window, RenderingHints)> Widget for Foo<F> {
 fn msg_edit<'a>(
     room_state: &'a crate::tui_app::RoomState,
     potentially_active: bool,
+    tasks: Tasks<'a>,
 ) -> impl Widget + 'a {
     let mut layout = VLayout::new();
     match &room_state.tui.msg_edit_type {
@@ -301,6 +302,7 @@ fn msg_edit<'a>(
                         display_message,
                         room_state,
                         &mut w,
+                        tasks,
                     )
                 },
             ));
@@ -310,7 +312,13 @@ fn msg_edit<'a>(
                 ColDemand::at_least(1),
                 RowDemand::exact(1),
                 move |mut w, _| {
-                    messages::draw_event_preview(messages::EDIT_PREFIX, content, room_state, &mut w)
+                    messages::draw_event_preview(
+                        messages::EDIT_PREFIX,
+                        content,
+                        room_state,
+                        &mut w,
+                        tasks,
+                    )
                 },
             ));
         }
@@ -363,6 +371,7 @@ fn tui<'a>(state: &'a State, tasks: Tasks<'a>) -> impl Widget + 'a {
                 .widget(msg_edit(
                     room,
                     matches!(state.tui.current_mode().builtin_mode(), BuiltinMode::Insert),
+                    tasks,
                 )),
             0.75,
         )

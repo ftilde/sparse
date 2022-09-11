@@ -107,6 +107,7 @@ impl Messages<'_> {
                         width: window.get_width(),
                         room_state: state,
                         show_mode: show_mode(&self.0, false),
+                        tasks: self.1,
                     };
                     let h = evt.space_demand().height.min;
                     let window_height = window.get_height();
@@ -199,6 +200,7 @@ impl Messages<'_> {
                         width: window.get_width(),
                         room_state: state,
                         show_mode: show_mode(self.0, selected),
+                        tasks: self.1,
                     }
                     .space_demand()
                     .height
@@ -240,6 +242,7 @@ impl Messages<'_> {
                         width: window.get_width(),
                         room_state: state,
                         show_mode: show_mode(self.0, selected),
+                        tasks: self.1,
                     };
                     let h = evt.space_demand().height.min;
                     let (mut current, below) = match window.split(h.from_origin()) {
@@ -353,6 +356,7 @@ struct TuiEvent<'a> {
     width: Width,
     room_state: &'a crate::tui_app::RoomState,
     show_mode: EventShowMode,
+    tasks: Tasks<'a>,
 }
 
 pub fn strip_body(mut body: &str) -> &str {
@@ -388,11 +392,12 @@ pub fn draw_event_preview<T: unsegen::base::CursorTarget, D: DrawEvent>(
     event: &D,
     room_state: &crate::tui_app::RoomState,
     target: &mut T,
+    tasks: Tasks,
 ) {
     let w = target.get_width();
     let mut c = Cursor::<T>::new(target);
     c.write(prefix);
-    event.draw(room_state, &mut c, true);
+    event.draw(room_state, &mut c, true, tasks);
     if c.get_row() != 0 || c.get_col() >= w.from_origin() {
         c = c.position((w - 3).from_origin(), AxisIndex::new(0));
         c.write("...");
@@ -405,6 +410,7 @@ pub trait DrawEvent {
         room_state: &crate::tui_app::RoomState,
         c: &mut Cursor<T>,
         simplified: bool,
+        tasks: Tasks,
     );
 }
 
@@ -414,19 +420,25 @@ impl DrawEvent for SyncMessageEvent<RoomMessageEventContent> {
         room_state: &crate::tui_app::RoomState,
         c: &mut Cursor<T>,
         simplified: bool,
+        tasks: Tasks,
     ) {
         if !simplified {
             if let Some(crate::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(m))) =
                 room_state.messages.original_message(&self.event_id)
             {
                 if let Some(Relation::Reply { in_reply_to: rel }) = &m.content.relates_to {
+                    let mut l =
+                        StyledLine::new(c.target().get_width(), c.target().get_default_style());
                     if let Some(rel) = room_state.messages.message_from_id(&rel.event_id) {
-                        let mut l =
-                            StyledLine::new(c.target().get_width(), c.target().get_default_style());
-                        draw_event_preview(REPLY_PREFIX, &rel, room_state, &mut l);
-                        c.write_preformatted(l.content.as_slice());
-                        c.wrap_line();
+                        draw_event_preview(REPLY_PREFIX, &rel, room_state, &mut l, tasks);
+                    } else {
+                        let mut c = Cursor::new(&mut l);
+                        c.write(REPLY_PREFIX);
+                        c.write(message_fetch_symbol!());
+                        tasks.set_message_query(room_state.id.clone(), MessageQuery::BeforeCache);
                     }
+                    c.write_preformatted(l.content.as_slice());
+                    c.wrap_line();
                 }
             }
         }
@@ -501,10 +513,11 @@ impl DrawEvent for AnySyncMessageEvent {
         room_state: &crate::tui_app::RoomState,
         c: &mut Cursor<T>,
         simplified: bool,
+        tasks: Tasks,
     ) {
         match self {
                 AnySyncMessageEvent::RoomMessage(msg) => {
-                    msg.draw(room_state, c, simplified)
+                    msg.draw(room_state, c, simplified, tasks)
                 }
                 AnySyncMessageEvent::RoomEncrypted(msg) => {
                     c.set_wrapping_mode(WrappingMode::Wrap);
@@ -590,6 +603,7 @@ impl DrawEvent for AnySyncStateEvent {
         room_state: &crate::tui_app::RoomState,
         c: &mut Cursor<T>,
         _simplified: bool,
+        _tasks: Tasks,
     ) {
         c.set_wrapping_mode(WrappingMode::Wrap);
         c.set_style_modifier(StyleModifier::new().italic(true));
@@ -713,11 +727,12 @@ impl DrawEvent for crate::tui_app::timeline::Event {
         room_state: &crate::tui_app::RoomState,
         c: &mut Cursor<T>,
         simplified: bool,
+        tasks: Tasks,
     ) {
         let mut c = c.save().style_modifier();
         match self {
-            crate::timeline::Event::Message(e) => e.draw(room_state, &mut c, simplified),
-            crate::timeline::Event::State(e) => e.draw(room_state, &mut c, simplified),
+            crate::timeline::Event::Message(e) => e.draw(room_state, &mut c, simplified, tasks),
+            crate::timeline::Event::State(e) => e.draw(room_state, &mut c, simplified, tasks),
             o => {
                 c.set_wrapping_mode(WrappingMode::Wrap);
                 let _ = write!(c, "Other event {:?}", o);
@@ -734,6 +749,7 @@ impl DrawEvent for Debug<'_> {
         _room_state: &crate::tui_app::RoomState,
         c: &mut Cursor<T>,
         _simplified: bool,
+        _tasks: Tasks,
     ) {
         c.set_wrapping_mode(WrappingMode::Wrap);
         match self.0 {
@@ -774,13 +790,14 @@ impl DrawEvent for Detailed<'_> {
         room_state: &crate::tui_app::RoomState,
         c: &mut Cursor<T>,
         simplified: bool,
+        tasks: Tasks,
     ) {
         match self.0 {
             TimelineEntry::Simple(m) => {
-                m.draw(room_state, c, simplified);
+                m.draw(room_state, c, simplified, tasks);
             }
             TimelineEntry::Deleted(m) => {
-                m.draw(room_state, c, simplified);
+                m.draw(room_state, c, simplified, tasks);
                 let mut c = c.save().style_modifier();
                 c.set_style_modifier(StyleModifier::new().italic(true));
                 c.write(" (deleted)");
@@ -788,13 +805,13 @@ impl DrawEvent for Detailed<'_> {
             TimelineEntry::Edited { original, versions } => {
                 {
                     let mut c = c.save().style_modifier().line_start_column();
-                    original.draw(room_state, &mut c, simplified);
+                    original.draw(room_state, &mut c, simplified, tasks);
                 }
                 for r in versions {
                     let mut c = c.save().style_modifier().line_start_column();
                     c.wrap_line();
                     write_time(&mut c, &r);
-                    r.draw(room_state, &mut c, true);
+                    r.draw(room_state, &mut c, true, tasks);
                 }
             }
         }
@@ -807,10 +824,11 @@ impl DrawEvent for TimelineEntry<'_> {
         room_state: &crate::tui_app::RoomState,
         c: &mut Cursor<T>,
         simplified: bool,
+        tasks: Tasks,
     ) {
         match self {
             TimelineEntry::Simple(m) => {
-                m.draw(room_state, c, simplified);
+                m.draw(room_state, c, simplified, tasks);
             }
             TimelineEntry::Deleted(m) => {
                 let mut c = c.save().style_modifier();
@@ -819,7 +837,10 @@ impl DrawEvent for TimelineEntry<'_> {
                 c.write(" deleted message");
             }
             TimelineEntry::Edited { versions, .. } => {
-                versions.last().unwrap().draw(room_state, c, simplified);
+                versions
+                    .last()
+                    .unwrap()
+                    .draw(room_state, c, simplified, tasks);
                 let mut c = c.save().style_modifier();
                 c.set_style_modifier(StyleModifier::new().italic(true));
                 c.write(" (edited)");
@@ -848,15 +869,15 @@ impl TuiEvent<'_> {
         let detailed;
         match self.show_mode {
             EventShowMode::Simple => {
-                self.event.draw(self.room_state, c, false);
+                self.event.draw(self.room_state, c, false, self.tasks);
                 detailed = false;
             }
             EventShowMode::Detailed => {
-                Detailed(self.event).draw(self.room_state, c, false);
+                Detailed(self.event).draw(self.room_state, c, false, self.tasks);
                 detailed = true;
             }
             EventShowMode::Debug => {
-                Debug(self.event).draw(self.room_state, c, false);
+                Debug(self.event).draw(self.room_state, c, false, self.tasks);
                 detailed = true;
             }
         }
