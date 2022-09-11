@@ -27,7 +27,7 @@ macro_rules! message_fetch_symbol {
         "[...]"
     };
 }
-pub const REPLY_PREFIX: &str = "┏➤ ";
+pub const REPLY_PREFIX: &str = "╭➤ ";
 pub const EDIT_PREFIX: &str = "Editing: ";
 
 pub struct MessagesMut<'a>(pub &'a mut State);
