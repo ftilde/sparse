@@ -278,11 +278,16 @@ async fn handle_notification(c: &Connection, room: &Room, notification: Notifica
         }
     }
 }
-async fn reset_timeline_cache(c: &Connection, room_id: &RoomId) {
-    tracing::info!("Reseting cache of room {} due to new room key", room_id);
+async fn try_reset_timeline_cache(c: &Connection, room_id: &RoomId) {
     let mut state = c.state.lock().await;
     let m = &mut state.rooms.get_mut(room_id).unwrap().messages;
-    m.clear();
+    if m.has_undecrypted_messages() {
+        tracing::info!(
+            "Reseting cache of room {} with undecrypted messages due to new room key",
+            room_id
+        );
+        m.clear();
+    }
 }
 
 async fn run_matrix_event_loop(c: Connection) {
@@ -304,10 +309,10 @@ async fn run_matrix_event_loop(c: Connection) {
             for e in response.to_device.events {
                 match e.deserialize() {
                     Ok(AnyToDeviceEvent::RoomKey(e)) => {
-                        reset_timeline_cache(&c, &e.content.room_id).await
+                        try_reset_timeline_cache(&c, &e.content.room_id).await
                     }
                     Ok(AnyToDeviceEvent::ForwardedRoomKey(e)) => {
-                        reset_timeline_cache(&c, &e.content.room_id).await
+                        try_reset_timeline_cache(&c, &e.content.room_id).await
                     }
                     Ok(_) => {}
                     Err(e) => {

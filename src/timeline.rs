@@ -133,6 +133,7 @@ pub struct RoomTimelineCache {
     msg_to_edits: HashMap<Box<EventId>, Vec<Event>>,
     edits_to_original: HashMap<Box<EventId>, Box<EventId>>,
     redactions: HashMap<Box<EventId>, Box<SyncRoomRedactionEvent>>,
+    has_undecrypted_messages: bool,
 }
 
 impl std::default::Default for RoomTimelineCache {
@@ -150,6 +151,7 @@ impl std::default::Default for RoomTimelineCache {
             msg_to_edits: HashMap::new(),
             edits_to_original: HashMap::new(),
             redactions: HashMap::new(),
+            has_undecrypted_messages: false,
         }
     }
 }
@@ -257,6 +259,7 @@ impl RoomTimelineCache {
         self.end = CacheEndState::Open;
         self.begin_token = None;
         self.end_token = None;
+        self.has_undecrypted_messages = false;
     }
 
     pub fn set_filter(&mut self, filter: Option<Filter>) {
@@ -275,7 +278,14 @@ impl RoomTimelineCache {
         }
     }
 
+    pub fn has_undecrypted_messages(&self) -> bool {
+        self.has_undecrypted_messages
+    }
+
     fn pre_process_message(&mut self, msg: Event) -> Option<Event> {
+        if let Event::Message(AnySyncMessageEvent::RoomEncrypted(_)) = &msg {
+            self.has_undecrypted_messages = true;
+        }
         match msg {
             Event::Message(AnySyncMessageEvent::Reaction(r)) => {
                 self.reactions_to_target
