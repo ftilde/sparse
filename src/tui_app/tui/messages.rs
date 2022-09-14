@@ -784,6 +784,43 @@ impl DrawEvent for Debug<'_> {
 
 struct Detailed<'a>(TimelineEntry<'a>);
 
+fn draw_diff<T: unsegen::base::CursorTarget>(
+    prev: &crate::tui_app::timeline::Event,
+    this: &crate::tui_app::timeline::Event,
+    room_state: &crate::tui_app::RoomState,
+    c: &mut Cursor<T>,
+) -> Result<(), ()> {
+    if let (
+        crate::tui_app::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(prev)),
+        crate::tui_app::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(this)),
+    ) = (prev, this)
+    {
+        write_user(c, &this.sender, room_state);
+        c.write(": ");
+        let prev_body = strip_body(prev.content.body());
+        let this_body = strip_body(this.content.body());
+        for d in diff::chars(prev_body, this_body) {
+            match d {
+                diff::Result::Left(l) => {
+                    let mut c = c.save().style_modifier();
+                    c.set_style_modifier(StyleModifier::new().fg_color(Color::Red));
+                    let _ = c.write_char(l);
+                }
+                diff::Result::Right(r) => {
+                    let mut c = c.save().style_modifier();
+                    c.set_style_modifier(StyleModifier::new().fg_color(Color::Green));
+                    let _ = c.write_char(r);
+                }
+                diff::Result::Both(l, _) => {
+                    let _ = c.write_char(l);
+                }
+            }
+        }
+        return Ok(());
+    }
+    Err(())
+}
+
 impl DrawEvent for Detailed<'_> {
     fn draw<T: unsegen::base::CursorTarget>(
         &self,
@@ -807,11 +844,15 @@ impl DrawEvent for Detailed<'_> {
                     let mut c = c.save().style_modifier().line_start_column();
                     original.draw(room_state, &mut c, simplified, tasks);
                 }
-                for r in versions {
+                let mut prev = original;
+                for this in versions {
                     let mut c = c.save().style_modifier().line_start_column();
                     c.wrap_line();
-                    write_time(&mut c, &r);
-                    r.draw(room_state, &mut c, true, tasks);
+                    write_time(&mut c, &this);
+                    if let Err(()) = draw_diff(prev, this, room_state, &mut c) {
+                        self.draw(room_state, &mut c, true, tasks);
+                    }
+                    prev = this;
                 }
             }
         }
