@@ -9,6 +9,7 @@ use regex::{Regex, RegexBuilder};
 pub enum Filter {
     Sender(Regex),
     Body(Regex),
+    MessageType(Regex),
     Not(Box<Filter>),
     And(Vec<Filter>),
     Or(Vec<Filter>),
@@ -20,6 +21,13 @@ impl Filter {
             Filter::Body(body) => {
                 if let Event::Message(AnySyncMessageEvent::RoomMessage(m)) = event {
                     body.is_match(crate::tui_app::tui::messages::strip_body(m.content.body()))
+                } else {
+                    false
+                }
+            }
+            Filter::MessageType(body) => {
+                if let Event::Message(AnySyncMessageEvent::RoomMessage(m)) = event {
+                    body.is_match(m.content.msgtype())
                 } else {
                     false
                 }
@@ -40,6 +48,7 @@ impl Filter {
 enum FilterExpression {
     Sender(String),
     Body(String),
+    MessageType(String),
     Not(Box<FilterExpression>),
     And(Vec<FilterExpression>),
     Or(Vec<FilterExpression>),
@@ -229,6 +238,7 @@ fn parse_filter_item(t: &mut &[Token]) -> Result<FilterExpression, String> {
     match type_ {
         Some('f') => Ok(FilterExpression::Sender(output)),
         Some('b') | None => Ok(FilterExpression::Body(output)),
+        Some('t') => Ok(FilterExpression::MessageType(output)),
         Some(o) => Err(format!("Invalid filter type '{}'", o)),
     }
 }
@@ -304,6 +314,7 @@ impl FilterExpression {
         Ok(match self {
             FilterExpression::Sender(sender) => Filter::Sender(build_regex(&sender)?),
             FilterExpression::Body(body) => Filter::Body(build_regex(&body)?),
+            FilterExpression::MessageType(body) => Filter::MessageType(build_regex(&body)?),
             FilterExpression::Not(v) => Filter::Not(Box::new(v.build()?)),
             FilterExpression::And(v) => Filter::And(
                 v.into_iter()
