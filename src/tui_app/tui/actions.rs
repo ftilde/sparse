@@ -337,6 +337,49 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             ActionResult::Error("No current room".to_owned())
         }
     }),
+    ("delete_reactions", |c| {
+        let our_id = c.state.user_id().to_owned();
+        if let Some(room) = c.state.current_room_state_mut() {
+            if let super::MessageSelection::Specific(selected_id) = &room.tui.selection {
+                if let Some(reactions) = room.messages.reactions(selected_id) {
+                    let to_redact = reactions
+                        .values()
+                        .flat_map(|v| v.iter())
+                        .filter(|r| r.sender == our_id)
+                        .map(|r| r.event_id.clone())
+                        .collect::<Vec<_>>();
+
+                    if let Some(joined_room) = c.client.get_joined_room(&room.id) {
+                        let client = c.client.clone();
+                        let room_id = joined_room.room_id().to_owned();
+
+                        tokio::spawn(async move {
+                            for eid in to_redact {
+                                tracing::info!("redacting raction event: {:?}", eid);
+                                let txn_id = uuid::Uuid::new_v4().to_string();
+                                let request =
+                                    matrix_sdk::ruma::api::client::r0::redact::redact_event::Request::new(
+                                        &room_id, &eid, &txn_id,
+                                    );
+                                if let Err(e) = client.send(request, None).await {
+                                    tracing::error!("Cannot delete event: {:?}", e);
+                                }
+                            }
+                        });
+                        ActionResult::Ok
+                    } else {
+                        ActionResult::Noop
+                    }
+                } else {
+                    ActionResult::Error("Room not joined".to_owned())
+                }
+            } else {
+                ActionResult::Error("No message selected".to_owned())
+            }
+        } else {
+            ActionResult::Error("No current room".to_owned())
+        }
+    }),
     ("quit", |c| {
         *c.continue_running = false;
         ActionResult::Ok

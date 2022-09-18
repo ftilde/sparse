@@ -143,8 +143,8 @@ pub struct State {
     pub rooms: BTreeMap<Box<RoomId>, RoomState>,
     tui: tui::TuiState,
     clipboard_context: Option<cli_clipboard::ClipboardContext>,
+    user_id: Box<UserId>, // This is a cache for the user_id in non-async contexts. we may be able to remove it at some point.
 }
-
 fn init_clipboard() -> Option<cli_clipboard::ClipboardContext> {
     use cli_clipboard::ClipboardProvider;
     match cli_clipboard::ClipboardContext::new() {
@@ -157,12 +157,13 @@ fn init_clipboard() -> Option<cli_clipboard::ClipboardContext> {
 }
 
 impl State {
-    fn new(rooms: BTreeMap<Box<RoomId>, RoomState>) -> Self {
+    fn new(rooms: BTreeMap<Box<RoomId>, RoomState>, user_id: Box<UserId>) -> Self {
         let tui = crate::tui_app::tui::TuiState::new(rooms.keys().next().map(|k| &**k));
         State {
             rooms,
             tui,
             clipboard_context: init_clipboard(),
+            user_id,
         }
     }
     async fn update_room_info(&mut self, room: &Room) {
@@ -194,6 +195,9 @@ impl State {
         } else {
             None
         }
+    }
+    fn user_id(&self) -> &UserId {
+        &self.user_id
     }
 }
 
@@ -480,7 +484,8 @@ pub async fn run(
             rooms.insert(id.to_owned(), RoomState::from_room(&room).await);
         }
     }
-    let state = Arc::new(Mutex::new(State::new(rooms)));
+    let user_id = client.user_id().await.unwrap();
+    let state = Arc::new(Mutex::new(State::new(rooms, user_id)));
 
     let (event_sender, event_receiver) = mpsc::channel(1);
     let (message_query_sender, message_query_receiver) = watch::channel(None);
