@@ -472,12 +472,11 @@ impl RoomTimelineCache {
         }
     }
 
-    pub fn original_message(&self, id: &EventId) -> Option<&Event> {
-        self.events.get(id)
-    }
-
     pub fn message_from_id(&self, id: &EventId) -> Option<TimelineEntry> {
-        self.events.get(id).map(|i| self.entry_from_event(i))
+        let original_id = self.edits_to_original.get(id).map(|v| &**v).unwrap_or(id);
+        self.events
+            .get(original_id)
+            .map(|i| self.entry_from_event(i))
     }
 
     pub fn walk_from_known<'a>(&'a self, id: &'a EventId) -> EventWalkResult<'a> {

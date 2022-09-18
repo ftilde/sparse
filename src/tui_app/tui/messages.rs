@@ -424,7 +424,10 @@ impl DrawEvent for SyncMessageEvent<RoomMessageEventContent> {
     ) {
         if !simplified {
             if let Some(crate::timeline::Event::Message(AnySyncMessageEvent::RoomMessage(m))) =
-                room_state.messages.original_message(&self.event_id)
+                room_state
+                    .messages
+                    .message_from_id(&self.event_id)
+                    .map(TimelineEntry::original)
             {
                 if let Some(Relation::Reply { in_reply_to: rel }) = &m.content.relates_to {
                     let mut l =
