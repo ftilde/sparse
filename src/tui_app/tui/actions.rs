@@ -739,7 +739,15 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
     ("send_file", |c, path| {
         if let Some(room) = c.state.current_room_state_mut() {
             if let Some(joined_room) = c.client.get_joined_room(&room.id) {
-                let path = std::path::PathBuf::from(path);
+                let path = match shellexpand::full(&path) {
+                    Ok(p) => std::path::PathBuf::from(p.as_ref()),
+                    Err(e) => {
+                        return ActionResult::Error(format!(
+                            "Failed to expand path {}",
+                            e.to_string()
+                        ))
+                    }
+                };
                 match std::fs::File::open(&path) {
                     Ok(mut file) => {
                         let mime_type = mime_guess::from_path(&path).first_or_octet_stream();
@@ -885,7 +893,10 @@ fn save_file(
     content: impl matrix_sdk::media::MediaEventContent + Send + Sync + 'static,
     path: &str,
 ) -> ActionResult {
-    let path = std::path::PathBuf::from(path);
+    let path = match shellexpand::full(&path) {
+        Ok(p) => std::path::PathBuf::from(p.as_ref()),
+        Err(e) => return ActionResult::Error(format!("Failed to expand path {}", e.to_string())),
+    };
     match std::fs::File::create(&path) {
         Ok(mut file) => {
             tokio::spawn(async move {
