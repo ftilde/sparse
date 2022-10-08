@@ -783,11 +783,20 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
                         AnySyncMessageEvent::RoomMessage(msg),
                     )) = r.messages.message_from_id(&eid).and_then(|m| m.latest())
                     {
+                        let fname = msg.content.body();
                         match &msg.content.msgtype {
-                            MessageType::Image(f) => save_file(c.client.clone(), f.clone(), &path),
-                            MessageType::Video(f) => save_file(c.client.clone(), f.clone(), &path),
-                            MessageType::Audio(f) => save_file(c.client.clone(), f.clone(), &path),
-                            MessageType::File(f) => save_file(c.client.clone(), f.clone(), &path),
+                            MessageType::Image(f) => {
+                                save_file(c.client.clone(), f.clone(), &path, fname)
+                            }
+                            MessageType::Video(f) => {
+                                save_file(c.client.clone(), f.clone(), &path, fname)
+                            }
+                            MessageType::Audio(f) => {
+                                save_file(c.client.clone(), f.clone(), &path, fname)
+                            }
+                            MessageType::File(f) => {
+                                save_file(c.client.clone(), f.clone(), &path, fname)
+                            }
                             o => ActionResult::Error(format!("No file to save in message {:?}", o)),
                         }
                     } else {
@@ -892,11 +901,15 @@ fn save_file(
     c: Client,
     content: impl matrix_sdk::media::MediaEventContent + Send + Sync + 'static,
     path: &str,
+    possible_name: &str,
 ) -> ActionResult {
-    let path = match shellexpand::full(&path) {
+    let mut path = match shellexpand::full(&path) {
         Ok(p) => std::path::PathBuf::from(p.as_ref()),
         Err(e) => return ActionResult::Error(format!("Failed to expand path {}", e.to_string())),
     };
+    if path.is_dir() {
+        path.push(possible_name);
+    }
     match std::fs::File::create(&path) {
         Ok(mut file) => {
             tokio::spawn(async move {
