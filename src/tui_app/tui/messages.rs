@@ -32,6 +32,18 @@ pub const EDIT_PREFIX: &str = "Editing: ";
 
 pub struct MessagesMut<'a>(pub &'a mut State);
 
+impl MessagesMut<'_> {
+    pub fn deselect_message(&mut self) -> OperationResult {
+        let current = self.0.current_room_state_mut().ok_or(())?;
+        let sel = &mut current.tui.selection;
+        if let MessageSelection::Newest = *sel {
+            Err(())
+        } else {
+            *sel = MessageSelection::Newest;
+            Ok(())
+        }
+    }
+}
 impl Scrollable for MessagesMut<'_> {
     fn scroll_backwards(&mut self) -> OperationResult {
         let mut current = self.0.current_room_state_mut().ok_or(())?;
@@ -58,11 +70,10 @@ impl Scrollable for MessagesMut<'_> {
         }
         .ok_or(())?;
         current.tui.selection = match messages.next(pos) {
-            EventWalkResult::End => MessageSelection::Newest,
             EventWalkResult::Message(pos) => {
                 MessageSelection::Specific(messages.message(pos).event_id().to_owned())
             }
-            EventWalkResult::RequiresFetch => return Err(()),
+            EventWalkResult::RequiresFetch | EventWalkResult::End => return Err(()),
         };
         Ok(())
     }

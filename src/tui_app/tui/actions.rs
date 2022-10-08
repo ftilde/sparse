@@ -395,7 +395,9 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
             .into()
     }),
     ("deselect_message", |c| {
-        super::messages::MessagesMut(c.state).scroll_to_end().into()
+        super::messages::MessagesMut(c.state)
+            .deselect_message()
+            .into()
     }),
     ("select_next_room", |c| {
         super::rooms::RoomsMut(c.state).scroll_forwards().into()
