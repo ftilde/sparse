@@ -257,7 +257,8 @@ bind('<Return>', 'visual', open_selected_message)
 bind('y', 'visual', function(c)
     content = c:get_message_content()
     c:set_clipboard(content)
-    return res_ok()
+    c:deselect_message()
+    return c:pop_mode()
 end)
 
 e = clear_timeline_cache
