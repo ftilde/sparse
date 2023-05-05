@@ -492,9 +492,10 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                     {
                         room.tui.msg_edit_type =
                             super::SendMessageType::Edit(m.event_id().to_owned(), latest.clone());
-                        room.tui
-                            .msg_edit
-                            .set(super::messages::strip_body(latest.content.body()));
+                        room.tui.msg_edit.set(super::messages::strip_body(
+                            latest.content.body(),
+                            super::messages::is_rich_reply(eid, &room.messages),
+                        ));
                         ActionResult::Ok
                     } else {
                         ActionResult::Error(format!("Only simple message events can be edited",))

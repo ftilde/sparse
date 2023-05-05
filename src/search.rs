@@ -20,7 +20,10 @@ impl Filter {
             Filter::Sender(sender) => sender.is_match(event.sender().as_str()),
             Filter::Body(body) => {
                 if let Event::Message(AnySyncMessageEvent::RoomMessage(m)) = event {
-                    body.is_match(crate::tui_app::tui::messages::strip_body(m.content.body()))
+                    body.is_match(crate::tui_app::tui::messages::strip_body(
+                        m.content.body(),
+                        false,
+                    ))
                 } else {
                     false
                 }
