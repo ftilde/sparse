@@ -1,23 +1,23 @@
-use crate::search::Filter;
-use matrix_sdk::ruma::api::client::r0::message::get_message_events::{self, Direction};
-use matrix_sdk::ruma::events::room::encrypted::Relation;
+use crate::search::filter;
+use matrix_sdk::ruma::api::client::message::get_message_events;
+use matrix_sdk::ruma::api::Direction;
+use matrix_sdk::ruma::events::room::message::Relation;
 use matrix_sdk::ruma::events::room::redaction::SyncRoomRedactionEvent;
-use matrix_sdk::ruma::events::AnyRedactedSyncMessageEvent;
+use matrix_sdk::ruma::events::{
+    AnyMessageLikeEventContent, AnySyncMessageLikeEvent, AnySyncTimelineEvent,
+};
 use matrix_sdk::{
-    deserialized_responses::SyncRoomEvent,
     room::{Messages, Room},
-    ruma::events::{
-        reaction::ReactionEventContent, AnySyncMessageEvent, AnySyncRoomEvent, SyncMessageEvent,
-    },
-    ruma::identifiers::EventId,
+    ruma::events::reaction::ReactionEventContent,
+    ruma::{EventId, OwnedEventId},
     Client,
 };
 use std::collections::{HashMap, VecDeque};
 
 struct EventSequence {
     index_offset: isize,
-    sequence: VecDeque<Box<EventId>>,
-    index: HashMap<Box<EventId>, EventSequenceId>,
+    sequence: VecDeque<OwnedEventId>,
+    index: HashMap<OwnedEventId, EventSequenceId>,
 }
 
 #[derive(Copy, Clone)]
@@ -45,12 +45,12 @@ impl EventSequence {
         index as usize
     }
 
-    fn append(&mut self, item: Box<EventId>) {
+    fn append(&mut self, item: OwnedEventId) {
         let id = self.sequence_index_to_id(self.sequence.len());
         self.index.insert(item.clone(), id);
         self.sequence.push_back(item);
     }
-    fn prepend(&mut self, item: Box<EventId>) {
+    fn prepend(&mut self, item: OwnedEventId) {
         self.index_offset += 1;
 
         let id = self.sequence_index_to_id(0);
@@ -111,7 +111,7 @@ impl FilteredTimeline {
     }
 }
 
-pub type Event = AnySyncRoomEvent;
+pub type Event = AnySyncTimelineEvent;
 pub type Reaction = SyncMessageEvent<ReactionEventContent>;
 pub type Reactions = HashMap<String, Vec<Reaction>>;
 
@@ -123,16 +123,16 @@ pub enum CacheEndState {
 pub struct RoomTimelineCache {
     full_timeline: EventSequence,
     filtered_timeline: Option<FilteredTimeline>,
-    events: HashMap<Box<EventId>, Event>,
+    events: HashMap<OwnedEventId, Event>,
     pub begin: CacheEndState,
     pub end: CacheEndState,
     begin_token: Option<String>,
     end_token: Option<String>,
-    reactions: HashMap<Box<EventId>, Reactions>,
-    reactions_to_target: HashMap<Box<EventId>, Box<EventId>>,
-    msg_to_edits: HashMap<Box<EventId>, Vec<Event>>,
-    edits_to_original: HashMap<Box<EventId>, Box<EventId>>,
-    redactions: HashMap<Box<EventId>, Box<SyncRoomRedactionEvent>>,
+    reactions: HashMap<OwnedEventId, Reactions>,
+    reactions_to_target: HashMap<OwnedEventId, OwnedEventId>,
+    msg_to_edits: HashMap<OwnedEventId, Vec<Event>>,
+    edits_to_original: HashMap<OwnedEventId, OwnedEventId>,
+    redactions: HashMap<OwnedEventId, Box<SyncRoomRedactionEvent>>,
     has_undecrypted_messages: bool,
 }
 
@@ -282,65 +282,71 @@ impl RoomTimelineCache {
         self.has_undecrypted_messages
     }
 
-    fn pre_process_message(&mut self, msg: Event) -> Option<Event> {
-        if let Event::Message(AnySyncMessageEvent::RoomEncrypted(_)) = &msg {
+    fn pre_process_message(&mut self, event: Event) -> Option<Event> {
+        if let Event::MessageLike(AnySyncMessageLikeEvent::RoomEncrypted(_)) = &event {
             self.has_undecrypted_messages = true;
         }
-        match msg {
-            Event::Message(AnySyncMessageEvent::Reaction(r)) => {
-                self.reactions_to_target
-                    .insert(r.event_id.to_owned(), r.content.relates_to.event_id.clone());
-                self.reactions
-                    .entry(r.content.relates_to.event_id.to_owned())
-                    .or_default()
-                    .entry(r.content.relates_to.emoji.to_owned())
-                    .or_default()
-                    .push(r);
-                None
-            }
-            Event::RedactedMessage(AnyRedactedSyncMessageEvent::Reaction(_r)) => {
-                // Ignore deleted reactions
-                None
-            }
-            Event::Message(AnySyncMessageEvent::RoomRedaction(r)) => {
-                let id = &r.redacts;
-                // TODO: remove reactions
-                if let Some(reaction_target) = self.reactions_to_target.remove(id) {
-                    if let Some(reactions) = self.reactions.get_mut(&reaction_target) {
-                        for (emoji, reaction_events) in reactions.iter_mut() {
-                            if let Some(i) = reaction_events.iter().position(|e| *e.event_id == *id)
-                            {
-                                reaction_events.remove(i);
+        match event {
+            Event::MessageLike(msg) => {
+                let eid = msg.event_id();
+                let Some(content) = msg.original_content() else {
+                    // Ignore all redacted messages (TODO: Do we actually want that??)
+                    return None;
+                };
+                match content {
+                    AnyMessageLikeEventContent::Reaction(r) => {
+                        self.reactions_to_target
+                            .insert(eid.to_owned(), r.relates_to.event_id.clone());
+                        self.reactions
+                            .entry(r.relates_to.event_id.to_owned())
+                            .or_default()
+                            .entry(r.relates_to.key.to_owned())
+                            .or_default()
+                            .push(r);
+                        None
+                    }
+                    AnyMessageLikeEventContent::RoomRedaction(r) => {
+                        let id = &r.redacts.unwrap();
+                        // TODO: remove reactions
+                        if let Some(reaction_target) = self.reactions_to_target.remove(id) {
+                            if let Some(reactions) = self.reactions.get_mut(&reaction_target) {
+                                for (emoji, reaction_events) in reactions.iter_mut() {
+                                    if let Some(i) =
+                                        reaction_events.iter().position(|e| *e.event_id == *id)
+                                    {
+                                        reaction_events.remove(i);
+                                    }
+                                    if reaction_events.is_empty() {
+                                        let emoji = emoji.to_owned();
+                                        reactions.remove(&emoji);
+                                        break;
+                                    }
+                                }
+                                if reactions.is_empty() {
+                                    self.reactions.remove(&reaction_target);
+                                }
                             }
-                            if reaction_events.is_empty() {
-                                let emoji = emoji.to_owned();
-                                reactions.remove(&emoji);
-                                break;
-                            }
+                        } else {
+                            self.redactions.insert(id.to_owned(), Box::new(r));
                         }
-                        if reactions.is_empty() {
-                            self.reactions.remove(&reaction_target);
+                        None
+                    }
+                    AnyMessageLikeEventContent::Message(m) => {
+                        if let Some(Relation::Replacement(r)) = m.relates_to {
+                            self.edits_to_original.insert(eid.into(), r.event_id.into());
+                            self.msg_to_edits
+                                .entry(r.event_id.into())
+                                .or_default()
+                                .push(event);
+                            None
+                        } else {
+                            Some(event)
                         }
                     }
-                } else {
-                    self.redactions.insert(id.to_owned(), Box::new(r));
-                }
-                None
-            }
-            Event::Message(m) => {
-                if let Some(Relation::Replacement(r)) = m.content().relation() {
-                    self.edits_to_original
-                        .insert(m.event_id().to_owned(), r.event_id.clone());
-                    self.msg_to_edits
-                        .entry(r.event_id.clone())
-                        .or_default()
-                        .push(Event::Message(m));
-                    None
-                } else {
-                    Some(Event::Message(m))
+                    o => Some(o),
                 }
             }
-            o => Some(o),
+            Event::State(s) => Some(event),
         }
     }
 
@@ -556,7 +562,7 @@ impl RoomTimelineCache {
                     MessageQuery::AfterCache,
                     Direction::Forward,
                     t.clone(),
-                    client.sync_token().await,
+                    room.last_prev_batch().unwrap(), //TODO: not sure if this is correct?
                 ),
                 (MessageQuery::BeforeCache, Some(t), _) => (
                     MessageQuery::BeforeCache,
@@ -567,7 +573,7 @@ impl RoomTimelineCache {
                 (_, _, t) => (
                     MessageQuery::Newest,
                     Direction::Backward,
-                    client.sync_token().await.unwrap(),
+                    room.last_prev_batch().unwrap(), //TODO: not sure if this is correct?
                     t.clone(),
                 ),
             }
