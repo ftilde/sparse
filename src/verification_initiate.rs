@@ -4,8 +4,9 @@ use matrix_sdk::{self, config::SyncSettings, Client};
 
 pub async fn run(client: Client, id: String) -> Result<(), matrix_sdk::Error> {
     let _res = client.sync_once(SyncSettings::new()).await?;
-    let user_id = client.user_id().await.unwrap();
+    let user_id = client.user_id().unwrap();
     let device = client
+        .encryption()
         .get_device(&user_id, id.as_str().into())
         .await?
         .unwrap();

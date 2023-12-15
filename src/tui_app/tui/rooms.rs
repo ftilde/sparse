@@ -3,7 +3,7 @@ use unsegen::base::*;
 use unsegen::input::{OperationResult, Scrollable};
 use unsegen::widget::*;
 
-use matrix_sdk::ruma::identifiers::RoomId;
+use matrix_sdk::ruma::OwnedRoomId;
 
 use crate::tui_app::tui::BuiltinMode;
 use crate::tui_app::State;
@@ -14,13 +14,13 @@ pub struct Rooms<'a>(pub &'a State);
 impl<'a> Rooms<'a> {
     fn all_rooms<'r>(
         self,
-    ) -> impl DoubleEndedIterator<Item = (&'a Box<RoomId>, &'a crate::tui_app::RoomState)> + 'a
+    ) -> impl DoubleEndedIterator<Item = (&'a OwnedRoomId, &'a crate::tui_app::RoomState)> + 'a
     {
         self.0.rooms.iter()
     }
     fn active_rooms(
         self,
-    ) -> impl DoubleEndedIterator<Item = (&'a Box<RoomId>, &'a crate::tui_app::RoomState)> {
+    ) -> impl DoubleEndedIterator<Item = (&'a OwnedRoomId, &'a crate::tui_app::RoomState)> {
         let s = self.0.tui.room_filter_line.get();
         let s_lower = s.to_lowercase();
         let mixed = s != s_lower;

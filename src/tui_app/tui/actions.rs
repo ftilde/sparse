@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use matrix_sdk::ruma::events::{
     room::message::{Relation, RoomMessageEventContent},
-    AnyMessageEventContent,
+    AnySyncMessageLikeEvent, SyncMessageLikeEvent,
 };
 use rlua::{Lua, RegistryKey, UserData, UserDataMethods, Value};
 
@@ -11,7 +11,7 @@ use matrix_sdk::Client;
 use unsegen::input::{Editable, Navigatable, OperationResult, Scrollable, Writable};
 use unsegen::widget::builtin::{TextEdit, TextElement, TextTarget};
 
-use matrix_sdk::ruma::events::{room::message::MessageType, AnySyncMessageEvent};
+use matrix_sdk::ruma::events::room::message::MessageType;
 
 use cli_clipboard::ClipboardProvider;
 
@@ -97,8 +97,10 @@ impl UserData for &mut CommandContext<'_> {
                         Err(rlua::Error::RuntimeError("No message selected".to_owned()))
                     }
                     super::MessageSelection::Specific(eid) => {
-                        if let Some(crate::timeline::Event::Message(
-                            AnySyncMessageEvent::RoomMessage(msg),
+                        if let Some(crate::timeline::Event::MessageLike(
+                            AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(
+                                msg,
+                            )),
                         )) = r.messages.message_from_id(&eid).and_then(|m| m.latest())
                         {
                             Ok(msg.content.body().to_owned())
@@ -268,35 +270,40 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                 room.tui.msg_edit.clear().unwrap();
                 let mut tmp_type = SendMessageType::Simple;
                 std::mem::swap(&mut tmp_type, &mut room.tui.msg_edit_type);
-                if let Some(m_room) = c.client.get_joined_room(&room.id) {
+                if let Some(m_room) = c.client.get_room(&room.id) {
                     let content = match tmp_type {
                         SendMessageType::Simple => RoomMessageEventContent::text_plain(msg),
                         SendMessageType::Reply(prev_id, original_message) => {
-                            let mut repl =
-                                RoomMessageEventContent::text_reply_plain(msg, &original_message);
+                            let repl = RoomMessageEventContent::text_plain(msg);
+                            let mut repl = repl.make_reply_to(
+                                &original_message.into_full_event(m_room.room_id().into()),
+                                matrix_sdk::ruma::events::room::message::ForwardThread::No,
+                                matrix_sdk::ruma::events::room::message::AddMentions::No,
+                            );
+                            //TODO NO_PUSH_master see if this is still required...
+
                             // Fix up id to point to the original message id in case of edits
                             repl.relates_to = Some(Relation::Reply {
-                                in_reply_to:
-                                    matrix_sdk::ruma::events::room::message::InReplyTo::new(prev_id),
+                                in_reply_to: matrix_sdk::ruma::events::relation::InReplyTo::new(
+                                    prev_id.into(),
+                                ),
                             });
                             repl
                         }
                         SendMessageType::Edit(prev_id, _prev_msg) => {
-                            let mut m = RoomMessageEventContent::text_plain(msg);
-                            m.relates_to = Some(Relation::Replacement(
-                                matrix_sdk::ruma::events::room::message::Replacement::new(
-                                    prev_id,
-                                    Box::new(m.clone()),
+                            let m = RoomMessageEventContent::text_plain(msg);
+                            let m = m.make_replacement(
+                                matrix_sdk::ruma::events::room::message::ReplacementMetadata::new(
+                                    prev_id.into(),
+                                    None,
                                 ),
-                            ));
+                                None, //TODO NO_PUSH_master: Not sure if anything goes here...
+                            );
                             m
                         }
                     };
                     tokio::spawn(async move {
-                        m_room
-                            .send(AnyMessageEventContent::RoomMessage(content), None)
-                            .await
-                            .unwrap();
+                        m_room.send(content).await.unwrap();
                     });
                     ActionResult::Ok
                 } else {
@@ -312,17 +319,10 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     ("delete_message", |c| {
         if let Some(room) = c.state.current_room_state_mut() {
             if let super::MessageSelection::Specific(selected_id) = &room.tui.selection {
-                if let Some(joined_room) = c.client.get_joined_room(&room.id) {
-                    let client = c.client.clone();
-                    let eid = selected_id.to_owned();
-                    let room_id = joined_room.room_id().to_owned();
+                if let Some(joined_room) = c.client.get_room(&room.id) {
+                    let id = selected_id.clone();
                     tokio::spawn(async move {
-                        let txn_id = uuid::Uuid::new_v4().to_string();
-                        let request =
-                            matrix_sdk::ruma::api::client::r0::redact::redact_event::Request::new(
-                                &room_id, &eid, &txn_id,
-                            );
-                        if let Err(e) = client.send(request, None).await {
+                        if let Err(e) = joined_room.redact(&id, None, None).await {
                             tracing::error!("Cannot delete event: {:?}", e);
                         }
                     });
@@ -349,19 +349,11 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                         .map(|r| r.event_id.clone())
                         .collect::<Vec<_>>();
 
-                    if let Some(joined_room) = c.client.get_joined_room(&room.id) {
-                        let client = c.client.clone();
-                        let room_id = joined_room.room_id().to_owned();
-
+                    if let Some(joined_room) = c.client.get_room(&room.id) {
                         tokio::spawn(async move {
                             for eid in to_redact {
-                                tracing::info!("redacting raction event: {:?}", eid);
-                                let txn_id = uuid::Uuid::new_v4().to_string();
-                                let request =
-                                    matrix_sdk::ruma::api::client::r0::redact::redact_event::Request::new(
-                                        &room_id, &eid, &txn_id,
-                                    );
-                                if let Err(e) = client.send(request, None).await {
+                                tracing::info!("redacting reaction event: {:?}", eid);
+                                if let Err(e) = joined_room.redact(&eid, None, None).await {
                                     tracing::error!("Cannot delete event: {:?}", e);
                                 }
                             }
@@ -415,14 +407,15 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
         if let Some(room) = c.state.current_room_state_mut() {
             if let super::MessageSelection::Specific(eid) = &room.tui.selection {
                 if let Some(m) = room.messages.message_from_id(&eid) {
-                    if let Some(Event::Message(AnySyncMessageEvent::RoomMessage(message))) =
-                        m.latest()
+                    if let Some(Event::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+                        SyncMessageLikeEvent::Original(message),
+                    ))) = m.latest()
                     {
                         if let Some(Relation::Reply { in_reply_to: rel }) =
                             &message.content.relates_to
                         {
                             room.tui.selection =
-                                super::MessageSelection::Specific(rel.event_id.to_owned());
+                                super::MessageSelection::Specific(rel.event_id.clone());
                             ActionResult::Ok
                         } else {
                             ActionResult::Error(format!("Message is not a reply"))
@@ -461,11 +454,12 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
         if let Some(room) = c.state.current_room_state_mut() {
             if let super::MessageSelection::Specific(eid) = &room.tui.selection {
                 if let Some(m) = room.messages.message_from_id(&eid) {
-                    if let Some(Event::Message(AnySyncMessageEvent::RoomMessage(message))) =
-                        m.latest()
+                    if let Some(Event::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+                        SyncMessageLikeEvent::Original(message),
+                    ))) = m.latest()
                     {
                         room.tui.msg_edit_type =
-                            super::SendMessageType::Reply(m.event_id().to_owned(), message.clone());
+                            super::SendMessageType::Reply(m.event_id().into(), message.clone());
                         ActionResult::Ok
                     } else {
                         ActionResult::Error(
@@ -486,12 +480,12 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
         if let Some(room) = c.state.current_room_state_mut() {
             if let super::MessageSelection::Specific(eid) = &room.tui.selection {
                 if let Some(m) = room.messages.message_from_id(&eid) {
-                    if let Some(crate::timeline::Event::Message(
-                        AnySyncMessageEvent::RoomMessage(latest),
-                    )) = m.latest()
+                    if let Some(Event::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+                        SyncMessageLikeEvent::Original(latest),
+                    ))) = m.latest()
                     {
                         room.tui.msg_edit_type =
-                            super::SendMessageType::Edit(m.event_id().to_owned(), latest.clone());
+                            super::SendMessageType::Edit(m.event_id().into(), latest.clone());
                         room.tui.msg_edit.set(super::messages::strip_body(
                             latest.content.body(),
                             super::messages::is_rich_reply(eid, &room.messages),
@@ -544,9 +538,9 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                     ActionResult::Error("No message selected".to_owned())
                 }
                 super::MessageSelection::Specific(eid) => {
-                    if let Some(crate::timeline::Event::Message(
-                        AnySyncMessageEvent::RoomMessage(msg),
-                    )) = r.messages.message_from_id(&eid).and_then(|m| m.latest())
+                    if let Some(Event::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+                        SyncMessageLikeEvent::Original(msg),
+                    ))) = r.messages.message_from_id(&eid).and_then(|m| m.latest())
                     {
                         match &msg.content.msgtype {
                             MessageType::Text(t) => {
@@ -693,23 +687,13 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
         if let Some(room) = c.state.current_room_state_mut() {
             if let super::MessageSelection::Specific(eid) = &room.tui.selection {
                 let reaction = matrix_sdk::ruma::events::reaction::ReactionEventContent::new(
-                    matrix_sdk::ruma::events::reaction::Relation::new(eid.clone(), s),
+                    matrix_sdk::ruma::events::relation::Annotation::new(eid.clone(), s),
                 );
-                if let Some(joined_room) = c.client.get_joined_room(&room.id) {
-                    let client = c.client.clone();
-                    let room_id = joined_room.room_id().to_owned();
+                if let Some(joined_room) = c.client.get_room(&room.id) {
                     tokio::spawn(async move {
-                        let txn_id = uuid::Uuid::new_v4().to_string();
-                        let request =
-                            matrix_sdk::ruma::api::client::r0::message::send_message_event::Request::new(
-                                &room_id,
-                                &txn_id,
-                                &reaction,
-                            )
-                            .unwrap();
+                        //NO_PUSH_master: make sure this is actually fixed
                         // The change below can be reversed if matrix-sdk issue #470 is fixed.
-                        //if let Err(e) = joined_room.send(reaction, None).await {
-                        if let Err(e) = client.send(request, None).await {
+                        if let Err(e) = joined_room.send(reaction).await {
                             tracing::error!("Cannot react to event: {:?}", e);
                         }
                     });
@@ -739,7 +723,7 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
     }),
     ("send_file", |c, path| {
         if let Some(room) = c.state.current_room_state_mut() {
-            if let Some(joined_room) = c.client.get_joined_room(&room.id) {
+            if let Some(joined_room) = c.client.get_room(&room.id) {
                 let path = match shellexpand::full(&path) {
                     Ok(p) => std::path::PathBuf::from(p.as_ref()),
                     Err(e) => {
@@ -751,18 +735,28 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
                 };
                 match std::fs::File::open(&path) {
                     Ok(mut file) => {
+                        use std::io::Read;
+
                         let mime_type = mime_guess::from_path(&path).first_or_octet_stream();
                         let description: String =
                             path.file_name().unwrap().to_string_lossy().to_string();
-                        tokio::spawn(async move {
-                            if let Err(e) = joined_room
-                                .send_attachment(&description, &mime_type, &mut file, None)
-                                .await
-                            {
-                                tracing::error!("Cannot send file: {:?}", e);
+                        let mut buf = Vec::new();
+                        match file.read_to_end(&mut buf) {
+                            Ok(_) => {
+                                let config = matrix_sdk::attachment::AttachmentConfig::new();
+                                //TODO: we could provide more info based on the mime_type
+                                tokio::spawn(async move {
+                                    if let Err(e) = joined_room
+                                        .send_attachment(&description, &mime_type, buf, config)
+                                        .await
+                                    {
+                                        tracing::error!("Cannot send file: {:?}", e);
+                                    }
+                                });
+                                ActionResult::Ok
                             }
-                        });
-                        ActionResult::Ok
+                            Err(e) => ActionResult::Error(format!("Failed to read file: {:?}", e)),
+                        }
                     }
                     Err(e) => ActionResult::Error(format!("Cannot open file for sending: {:?}", e)),
                 }
@@ -780,9 +774,9 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
                     ActionResult::Error("No message selected".to_owned())
                 }
                 super::MessageSelection::Specific(eid) => {
-                    if let Some(crate::timeline::Event::Message(
-                        AnySyncMessageEvent::RoomMessage(msg),
-                    )) = r.messages.message_from_id(&eid).and_then(|m| m.latest())
+                    if let Some(Event::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+                        SyncMessageLikeEvent::Original(msg),
+                    ))) = r.messages.message_from_id(&eid).and_then(|m| m.latest())
                     {
                         let fname = msg.content.body();
                         match &msg.content.msgtype {
@@ -851,11 +845,12 @@ async fn write_file(
     content: impl matrix_sdk::media::MediaEventContent + Send,
     target: &mut (dyn std::io::Write + Send),
 ) -> Result<(), String> {
-    if let Some(media_type) = content.file() {
+    if let Some(media_type) = content.source() {
         match c
+            .media()
             .get_media_content(
                 &matrix_sdk::media::MediaRequest {
-                    media_type,
+                    source: media_type,
                     format: matrix_sdk::media::MediaFormat::File,
                 },
                 true,

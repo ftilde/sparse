@@ -1,8 +1,8 @@
 use std::{iter::Peekable, str::CharIndices};
 
-use matrix_sdk::ruma::events::AnySyncMessageEvent;
-
 use crate::timeline::Event;
+
+use matrix_sdk::ruma::events::AnySyncMessageLikeEvent;
 use regex::{Regex, RegexBuilder};
 
 #[derive(Clone)]
@@ -19,7 +19,8 @@ impl Filter {
         match self {
             Filter::Sender(sender) => sender.is_match(event.sender().as_str()),
             Filter::Body(body) => {
-                if let Event::Message(AnySyncMessageEvent::RoomMessage(m)) = event {
+                if let Event::MessageLike(AnySyncMessageLikeEvent::RoomMessage(m)) = event {
+                    let m = m.as_original().unwrap();
                     body.is_match(crate::tui_app::tui::messages::strip_body(
                         m.content.body(),
                         false,
@@ -29,7 +30,8 @@ impl Filter {
                 }
             }
             Filter::MessageType(body) => {
-                if let Event::Message(AnySyncMessageEvent::RoomMessage(m)) = event {
+                if let Event::MessageLike(AnySyncMessageLikeEvent::RoomMessage(m)) = event {
+                    let m = m.as_original().unwrap();
                     body.is_match(m.content.msgtype())
                 } else {
                     false

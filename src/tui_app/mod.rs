@@ -2,13 +2,16 @@ use matrix_sdk::{
     self,
     config::SyncSettings,
     room::Room,
-    ruma::api::client::r0::push::get_notifications::Notification,
-    ruma::identifiers::{EventId, RoomId},
     ruma::{
+        api::client::push::get_notifications::v3::Notification,
         events::{
-            room::message::MessageType, AnySyncMessageEvent, AnySyncRoomEvent, AnyToDeviceEvent,
+            receipt::{ReceiptThread, ReceiptType},
+            AnyMessageLikeEventContent, AnySyncTimelineEvent,
         },
-        UserId,
+    },
+    ruma::{
+        events::{room::message::MessageType, AnyToDeviceEvent},
+        OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
     },
     Client, LoopCtrl,
 };
@@ -24,7 +27,7 @@ use unsegen::base::Color;
 
 pub mod tui;
 
-type UserColors = BTreeMap<Box<UserId>, Color>;
+type UserColors = BTreeMap<OwnedUserId, Color>;
 
 async fn calculate_user_colors(room: &Room) -> UserColors {
     let available_colors = [
@@ -50,12 +53,12 @@ async fn calculate_user_colors(room: &Room) -> UserColors {
         .map(|i| {
             let mut hasher = DefaultHasher::new();
             i.as_str().hash(&mut hasher);
-            (i.to_owned(), hasher.finish() as usize % num_colors)
+            (i.into(), hasher.finish() as usize % num_colors)
         })
         .peekable();
 
     let mut user_colors = UserColors::new();
-    user_colors.insert(own_user_id.to_owned(), own_color);
+    user_colors.insert(own_user_id.into(), own_color);
 
     let mut table = vec![None; num_colors];
     'outer: while let Some((_id, pos)) = raw_colors.peek() {
@@ -84,10 +87,10 @@ async fn calculate_user_colors(room: &Room) -> UserColors {
 }
 
 pub struct RoomState {
-    id: Box<RoomId>,
+    id: OwnedRoomId,
     pub messages: timeline::RoomTimelineCache,
     name: String,
-    latest_read_message: Option<Box<EventId>>,
+    latest_read_message: Option<OwnedEventId>,
     num_unread_notifications: u64,
     last_notification_handle: Option<notify_rust::NotificationHandle>,
     user_colors: UserColors,
@@ -97,14 +100,19 @@ pub struct RoomState {
 
 impl RoomState {
     async fn from_room(room: &Room) -> Self {
-        let name = room.display_name().await.unwrap();
+        let name = room.display_name().await.unwrap().to_string();
         let latest_read_message = room
-            .user_read_receipt(room.own_user_id())
+            .load_user_receipt(
+                ReceiptType::ReadPrivate, /* NO_PUSH_master: not sure?? */
+                ReceiptThread::Main,
+                room.own_user_id(),
+            )
             .await
             .unwrap()
             .map(|(id, _)| id);
+
         RoomState {
-            id: room.room_id().to_owned(),
+            id: room.room_id().into(),
             messages: timeline::RoomTimelineCache::default(),
             name,
             latest_read_message,
@@ -115,14 +123,14 @@ impl RoomState {
         }
     }
 
-    pub fn mark_newest_event_as_read(&mut self) -> Option<Box<EventId>> {
+    pub fn mark_newest_event_as_read(&mut self) -> Option<OwnedEventId> {
         self.num_unread_notifications = 0;
         self.last_notification_handle
             .take()
             .map(|handle| handle.close());
         let latest = self.messages.end_id();
         if latest.is_some() && self.latest_read_message.as_deref() != latest {
-            self.latest_read_message = latest.map(|e| e.to_owned());
+            self.latest_read_message = latest.map(|e| e.into());
             self.latest_read_message.clone()
         } else {
             None
@@ -140,10 +148,10 @@ impl RoomState {
 }
 
 pub struct State {
-    pub rooms: BTreeMap<Box<RoomId>, RoomState>,
+    pub rooms: BTreeMap<OwnedRoomId, RoomState>,
     tui: tui::TuiState,
     clipboard_context: Option<cli_clipboard::ClipboardContext>,
-    user_id: Box<UserId>, // This is a cache for the user_id in non-async contexts. we may be able to remove it at some point.
+    user_id: OwnedUserId, // This is a cache for the user_id in non-async contexts. we may be able to remove it at some point.
 }
 fn init_clipboard() -> Option<cli_clipboard::ClipboardContext> {
     use cli_clipboard::ClipboardProvider;
@@ -157,7 +165,7 @@ fn init_clipboard() -> Option<cli_clipboard::ClipboardContext> {
 }
 
 impl State {
-    fn new(rooms: BTreeMap<Box<RoomId>, RoomState>, user_id: Box<UserId>) -> Self {
+    fn new(rooms: BTreeMap<OwnedRoomId, RoomState>, user_id: OwnedUserId) -> Self {
         let tui = crate::tui_app::tui::TuiState::new(rooms.keys().next().map(|k| &**k));
         State {
             rooms,
@@ -167,20 +175,12 @@ impl State {
         }
     }
     async fn update_room_info(&mut self, room: &Room) {
-        match room {
-            Room::Joined(_) => {
-                if let Some(r) = self.rooms.get_mut(room.room_id()) {
-                    r.name = room.display_name().await.unwrap();
-                    r.user_colors = calculate_user_colors(room).await;
-                } else {
-                    self.rooms
-                        .insert(room.room_id().to_owned(), RoomState::from_room(room).await);
-                }
-            }
-            Room::Left(room) => {
-                self.rooms.remove(room.room_id());
-            }
-            Room::Invited(_) => { /*TODO*/ }
+        if let Some(r) = self.rooms.get_mut(room.room_id()) {
+            r.name = room.display_name().await.unwrap().to_string();
+            r.user_colors = calculate_user_colors(room).await;
+        } else {
+            self.rooms
+                .insert(room.room_id().to_owned(), RoomState::from_room(room).await);
         }
     }
     fn current_room_state(&self) -> Option<&RoomState> {
@@ -213,31 +213,32 @@ async fn handle_notification(c: &Connection, room: &Room, notification: Notifica
         use crate::config::NotificationStyle;
         match notification.event.deserialize() {
             Ok(e) => {
-                if Some(e.sender()) != c.client.user_id().await.as_deref() {
+                if Some(e.sender()) != c.client.user_id().as_deref() {
                     let mut notification = notify_rust::Notification::new();
                     let sender = e.sender().to_string();
-                    let group_string = if room.is_direct() {
+                    let group_string = if room.is_direct().await.unwrap() {
                         format!("{}", sender)
                     } else {
-                        let g = room
-                            .display_name()
-                            .await
-                            .unwrap_or_else(|_| "Unknown room".to_owned());
+                        let g = room.display_name().await.unwrap().to_string();
                         format!("{} in {}", sender, g)
                     };
-                    let content = match e {
-                        AnySyncRoomEvent::Message(m) => match m {
-                            AnySyncMessageEvent::RoomMessage(m) => match m.content.msgtype {
+                    let content = if let AnySyncTimelineEvent::MessageLike(m) = e {
+                        if let Some(AnyMessageLikeEventContent::RoomMessage(m)) =
+                            m.original_content()
+                        {
+                            match m.msgtype {
                                 MessageType::Text(t) => t.body,
                                 MessageType::Image(_) => String::from("sent an image"),
                                 MessageType::Audio(_) => String::from("sent an audio message"),
                                 MessageType::Video(_) => String::from("sent a video"),
                                 MessageType::File(_) => String::from("sent a file"),
-                                o => format!("{:?}", o),
-                            },
-                            o => format!("{:?}", o),
-                        },
-                        _ => String::new(),
+                                _ => String::new(),
+                            }
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
                     };
                     match c.config.notification_style {
                         NotificationStyle::Disabled => {}
@@ -310,7 +311,7 @@ async fn run_matrix_event_loop(c: Connection) {
                     }
                 }
             }
-            for e in response.to_device.events {
+            for e in response.to_device {
                 match e.deserialize() {
                     Ok(AnyToDeviceEvent::RoomKey(e)) => {
                         try_reset_timeline_cache(&c, &e.content.room_id).await
@@ -333,7 +334,7 @@ async fn run_matrix_event_loop(c: Connection) {
 
                 use matrix_sdk::ruma::events::AnySyncStateEvent;
                 if let Some(room) = c.client.get_room(&room_id) {
-                    for e in room_info.state.events {
+                    for e in room_info.state {
                         match e.deserialize() {
                             Ok(
                                 AnySyncStateEvent::RoomMember(_)
@@ -354,7 +355,8 @@ async fn run_matrix_event_loop(c: Connection) {
             c.update().await;
             LoopCtrl::Continue
         })
-        .await;
+        .await
+        .unwrap();
 }
 
 #[derive(Clone)]
@@ -400,7 +402,7 @@ async fn run_matrix_message_fetch_loop(
                 let state = c.state.lock().await;
                 let m = state.rooms.get(rid).unwrap();
 
-                m.messages.events_query(&c.client, room, task.kind).await
+                m.messages.events_query(room, task.kind).await
             };
 
             let res = query.await.unwrap();
@@ -466,8 +468,8 @@ pub async fn run(
     //
     // Also: We have to enable lazy loading of members because otherwise the calculation of room
     // display names is broken. (There is a note about that in the implementation in matrix_sdk...)
-    use matrix_sdk::ruma::api::client::r0::filter::{FilterDefinition, LazyLoadOptions};
-    use matrix_sdk::ruma::api::client::r0::sync::sync_events::Filter;
+    use matrix_sdk::ruma::api::client::filter::{FilterDefinition, LazyLoadOptions};
+    use matrix_sdk::ruma::api::client::sync::sync_events::v3::Filter;
     client
         .sync_once(SyncSettings::new().filter({
             let mut filter_def = FilterDefinition::empty();
@@ -484,8 +486,8 @@ pub async fn run(
             rooms.insert(id.to_owned(), RoomState::from_room(&room).await);
         }
     }
-    let user_id = client.user_id().await.unwrap();
-    let state = Arc::new(Mutex::new(State::new(rooms, user_id)));
+    let user_id = client.user_id().unwrap();
+    let state = Arc::new(Mutex::new(State::new(rooms, user_id.into())));
 
     let (event_sender, event_receiver) = mpsc::channel(1);
     let (message_query_sender, message_query_receiver) = watch::channel(None);

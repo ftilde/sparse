@@ -1,16 +1,15 @@
-use crate::search::filter;
-use matrix_sdk::ruma::api::client::message::get_message_events;
+use crate::search::Filter;
+use matrix_sdk::deserialized_responses::SyncTimelineEvent;
 use matrix_sdk::ruma::api::Direction;
 use matrix_sdk::ruma::events::room::message::Relation;
-use matrix_sdk::ruma::events::room::redaction::SyncRoomRedactionEvent;
+use matrix_sdk::ruma::events::room::redaction::OriginalSyncRoomRedactionEvent;
 use matrix_sdk::ruma::events::{
-    AnyMessageLikeEventContent, AnySyncMessageLikeEvent, AnySyncTimelineEvent,
+    AnySyncMessageLikeEvent, AnySyncTimelineEvent, OriginalSyncMessageLikeEvent,
 };
 use matrix_sdk::{
     room::{Messages, Room},
     ruma::events::reaction::ReactionEventContent,
     ruma::{EventId, OwnedEventId},
-    Client,
 };
 use std::collections::{HashMap, VecDeque};
 
@@ -112,7 +111,7 @@ impl FilteredTimeline {
 }
 
 pub type Event = AnySyncTimelineEvent;
-pub type Reaction = SyncMessageEvent<ReactionEventContent>;
+pub type Reaction = OriginalSyncMessageLikeEvent<ReactionEventContent>;
 pub type Reactions = HashMap<String, Vec<Reaction>>;
 
 pub enum CacheEndState {
@@ -132,7 +131,7 @@ pub struct RoomTimelineCache {
     reactions_to_target: HashMap<OwnedEventId, OwnedEventId>,
     msg_to_edits: HashMap<OwnedEventId, Vec<Event>>,
     edits_to_original: HashMap<OwnedEventId, OwnedEventId>,
-    redactions: HashMap<OwnedEventId, Box<SyncRoomRedactionEvent>>,
+    redactions: HashMap<OwnedEventId, Box<OriginalSyncRoomRedactionEvent>>,
     has_undecrypted_messages: bool,
 }
 
@@ -286,27 +285,29 @@ impl RoomTimelineCache {
         if let Event::MessageLike(AnySyncMessageLikeEvent::RoomEncrypted(_)) = &event {
             self.has_undecrypted_messages = true;
         }
-        match event {
+        match &event {
             Event::MessageLike(msg) => {
-                let eid = msg.event_id();
-                let Some(content) = msg.original_content() else {
+                let eid = msg.event_id().to_owned();
+                let Some(_content) = msg.original_content() else {
                     // Ignore all redacted messages (TODO: Do we actually want that??)
                     return None;
                 };
-                match content {
-                    AnyMessageLikeEventContent::Reaction(r) => {
+                match msg {
+                    AnySyncMessageLikeEvent::Reaction(r) => {
+                        let r = r.as_original().unwrap();
                         self.reactions_to_target
-                            .insert(eid.to_owned(), r.relates_to.event_id.clone());
+                            .insert(eid.to_owned(), r.content.relates_to.event_id.clone());
                         self.reactions
-                            .entry(r.relates_to.event_id.to_owned())
+                            .entry(r.content.relates_to.event_id.to_owned())
                             .or_default()
-                            .entry(r.relates_to.key.to_owned())
+                            .entry(r.content.relates_to.key.to_owned())
                             .or_default()
-                            .push(r);
+                            .push(r.clone());
                         None
                     }
-                    AnyMessageLikeEventContent::RoomRedaction(r) => {
-                        let id = &r.redacts.unwrap();
+                    AnySyncMessageLikeEvent::RoomRedaction(r) => {
+                        let r = r.as_original().unwrap();
+                        let id = r.redacts.as_ref().unwrap();
                         // TODO: remove reactions
                         if let Some(reaction_target) = self.reactions_to_target.remove(id) {
                             if let Some(reactions) = self.reactions.get_mut(&reaction_target) {
@@ -327,15 +328,17 @@ impl RoomTimelineCache {
                                 }
                             }
                         } else {
-                            self.redactions.insert(id.to_owned(), Box::new(r));
+                            self.redactions.insert(id.to_owned(), Box::new(r.clone()));
                         }
                         None
                     }
-                    AnyMessageLikeEventContent::Message(m) => {
-                        if let Some(Relation::Replacement(r)) = m.relates_to {
-                            self.edits_to_original.insert(eid.into(), r.event_id.into());
+                    AnySyncMessageLikeEvent::Message(m) => {
+                        let m = m.as_original().unwrap();
+                        if let Some(Relation::Replacement(r)) = &m.content.relates_to {
+                            self.edits_to_original
+                                .insert(eid.into(), r.event_id.clone());
                             self.msg_to_edits
-                                .entry(r.event_id.into())
+                                .entry(r.event_id.clone())
                                 .or_default()
                                 .push(event);
                             None
@@ -343,10 +346,10 @@ impl RoomTimelineCache {
                             Some(event)
                         }
                     }
-                    o => Some(o),
+                    o => Some(AnySyncTimelineEvent::MessageLike(o.clone())),
                 }
             }
-            Event::State(s) => Some(event),
+            Event::State(_s) => Some(event),
         }
     }
 
@@ -415,7 +418,7 @@ impl RoomTimelineCache {
                     self.begin = CacheEndState::Open;
                     self.clear_timeline();
                 }
-                self.end_token = Some(batch.start.unwrap());
+                self.end_token = Some(batch.start);
                 self.end = CacheEndState::Reached;
 
                 for msg in transform_events(msgs.into_iter().rev().map(|e| e.into())) {
@@ -425,11 +428,7 @@ impl RoomTimelineCache {
         }
     }
 
-    pub fn handle_sync_batch(
-        &mut self,
-        batch: matrix_sdk::deserialized_responses::Timeline,
-        end_token: &str,
-    ) {
+    pub fn handle_sync_batch(&mut self, batch: matrix_sdk::sync::Timeline, end_token: &str) {
         if matches!(self.end, CacheEndState::Reached) {
             let events = batch.events.into_iter();
 
@@ -550,19 +549,16 @@ impl RoomTimelineCache {
 
     pub async fn events_query(
         &self,
-        client: &Client,
         room: Room,
         query: MessageQuery,
     ) -> impl std::future::Future<Output = matrix_sdk::Result<MessageQueryResult>> {
-        let room_id = room.room_id().to_owned();
-
         let (query, dir, from, to) = {
             match (query, &self.begin_token, &self.end_token) {
                 (MessageQuery::AfterCache, _, Some(t)) => (
                     MessageQuery::AfterCache,
                     Direction::Forward,
                     t.clone(),
-                    room.last_prev_batch().unwrap(), //TODO: not sure if this is correct?
+                    room.last_prev_batch(), //TODO: not sure if this is correct?
                 ),
                 (MessageQuery::BeforeCache, Some(t), _) => (
                     MessageQuery::BeforeCache,
@@ -580,9 +576,10 @@ impl RoomTimelineCache {
         };
 
         async move {
-            let mut request = get_message_events::Request::new(&room_id, &from, dir);
+            let mut request = matrix_sdk::room::MessagesOptions::new(dir);
             request.limit = QUERY_BATCH_SIZE_LIMIT.into();
-            request.to = to.as_deref();
+            request.from = Some(from); //TODO: not sure if this is correct?
+            request.to = to;
 
             let events = room.messages(request).await?;
 
@@ -595,7 +592,7 @@ impl RoomTimelineCache {
     }
 }
 
-fn transform_events(i: impl Iterator<Item = SyncRoomEvent>) -> impl Iterator<Item = Event> {
+fn transform_events(i: impl Iterator<Item = SyncTimelineEvent>) -> impl Iterator<Item = Event> {
     i.filter_map(|msg| match msg.event.deserialize() {
         Ok(e) => Some(e),
         Err(e) => {

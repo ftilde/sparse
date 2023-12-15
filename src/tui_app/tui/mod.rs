@@ -1,3 +1,7 @@
+use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
+use matrix_sdk::ruma::events::receipt::ReceiptThread;
+use matrix_sdk::ruma::events::OriginalSyncMessageLikeEvent;
+use matrix_sdk::ruma::{OwnedEventId, OwnedRoomId};
 use matrix_sdk::Client;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -12,10 +16,7 @@ use unsegen::input::{
 use unsegen::widget::builtin::*;
 use unsegen::widget::*;
 
-use matrix_sdk::ruma::{
-    events::{room::message::RoomMessageEventContent, SyncMessageEvent},
-    identifiers::{EventId, RoomId},
-};
+use matrix_sdk::ruma::{events::room::message::RoomMessageEventContent, RoomId};
 
 use crate::config::{Config, KeyMapFunctionResult, Keys};
 use crate::timeline::MessageQuery;
@@ -36,7 +37,7 @@ pub struct Tasks<'a> {
 }
 
 impl Tasks<'_> {
-    fn set_message_query(&self, room: Box<RoomId>, query: MessageQuery) {
+    fn set_message_query(&self, room: OwnedRoomId, query: MessageQuery) {
         let mut q = self.message_query.borrow_mut();
         *q = Some(MessageQueryRequest { room, kind: query });
     }
@@ -44,7 +45,7 @@ impl Tasks<'_> {
 
 pub enum MessageSelection {
     Newest,
-    Specific(Box<EventId>),
+    Specific(OwnedEventId),
 }
 
 pub struct RoomTuiState {
@@ -62,10 +63,12 @@ impl RoomTuiState {
         }
     }
 }
-fn send_read_receipt(c: &Client, rid: &RoomId, eid: Box<EventId>) {
-    if let Some(room) = c.get_joined_room(rid) {
+fn send_read_receipt(c: &Client, rid: &RoomId, eid: OwnedEventId) {
+    if let Some(room) = c.get_room(rid) {
         tokio::spawn(async move {
-            room.read_receipt(&eid).await.unwrap();
+            room.send_single_receipt(ReceiptType::ReadPrivate, ReceiptThread::Main, eid)
+                .await
+                .unwrap();
         });
     } else {
         tracing::error!("can't send read receipt, no joined room");
@@ -74,7 +77,7 @@ fn send_read_receipt(c: &Client, rid: &RoomId, eid: Box<EventId>) {
 
 #[derive(Default)]
 pub struct RoomSelectionHistory {
-    selections: Vec<Box<RoomId>>, // Ordered from least to most recent access via `select`
+    selections: Vec<OwnedRoomId>, // Ordered from least to most recent access via `select`
     current: usize,
 }
 
@@ -392,13 +395,19 @@ pub enum Event {
 #[derive(Debug)]
 pub enum SendMessageType {
     Simple,
-    Reply(Box<EventId>, SyncMessageEvent<RoomMessageEventContent>),
-    Edit(Box<EventId>, SyncMessageEvent<RoomMessageEventContent>),
+    Reply(
+        OwnedEventId,
+        OriginalSyncMessageLikeEvent<RoomMessageEventContent>,
+    ),
+    Edit(
+        OwnedEventId,
+        OriginalSyncMessageLikeEvent<RoomMessageEventContent>,
+    ),
 }
 
 #[derive(Clone)]
 pub struct MessageQueryRequest {
-    pub room: Box<RoomId>,
+    pub room: OwnedRoomId,
     pub kind: MessageQuery,
 }
 

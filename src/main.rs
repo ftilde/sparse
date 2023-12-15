@@ -8,26 +8,28 @@ mod verification_common;
 mod verification_initiate;
 mod verification_wait;
 
-use matrix_sdk::{self, config::ClientConfig, Client, Session};
+use matrix_sdk::{self, matrix_auth::MatrixSession, Client};
 
 use structopt::StructOpt;
-use url::Url;
 
 use std::path::PathBuf;
 
 mod config;
 use config::{Config, ConfigBuilder};
 
-const APP_NAME: &str = env!("CARGO_PKG_NAME");
+const APP_NAME: &str = concat!(env!("CARGO_PKG_NAME"), "-new"); //NO_PUSH_master
 const LOG_RETENTION_POLICY: log::RetentionPolicy = log::RetentionPolicy::Keep(3);
 
-fn try_load_session(config: &Config) -> Result<Session, Box<dyn std::error::Error>> {
-    let session_file = std::fs::File::open(config.session_file_path()?)?; //TODO: encrypt?
+fn try_load_session(config: &Config) -> Result<MatrixSession, Box<dyn std::error::Error>> {
+    let session_file = std::fs::File::open(config.session_file_path())?; //TODO: encrypt?
     Ok(serde_json::from_reader(session_file)?)
 }
 
-fn try_store_session(config: &Config, session: &Session) -> Result<(), Box<dyn std::error::Error>> {
-    let session_file_path = config.session_file_path()?;
+fn try_store_session(
+    config: &Config,
+    session: &MatrixSession,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let session_file_path = config.session_file_path();
     std::fs::create_dir_all(session_file_path.parent().unwrap())?;
     let session_file = std::fs::OpenOptions::new()
         .create(true)
@@ -43,7 +45,7 @@ async fn try_restore_session(
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session = try_load_session(config)?;
-    client.restore_login(session).await?;
+    client.restore_session(session).await?;
 
     // Test the token which may have been invalidated: We don't actually care about the result, but
     // it will fail if we are not logged in with the old token.
@@ -53,20 +55,23 @@ async fn try_restore_session(
 
 async fn login(config: &Config) -> Result<Client, String> {
     // the location for `JsonStore` to save files to
-    let data_dir = config.data_dir()?;
-    let client_config = ClientConfig::new()
-        .store_path(data_dir)
+    let data_dir = config.data_dir();
+
+    let client = Client::builder()
         .user_agent(APP_NAME)
-        .unwrap();
+        .server_name(&config.host)
+        .sqlite_store(data_dir, None);
+
     // create a new Client with the given homeserver url and config
-    let client = match Client::new_with_config(config.host.clone(), client_config) {
+    let client = match client.build().await {
         Ok(client) => client,
-        Err(matrix_sdk::Error::StateStore(matrix_sdk::StoreError::Sled(s))) => {
-            return Err(format!(
-                "Failed to open database. Is another sparse session running?\n\n{}",
-                s
-            ));
-        }
+        //NO_PUSH_master: Check if there are similar errors with sqlite
+        //Err(matrix_sdk::Error::StateStore(matrix_sdk::StoreError::Sled(s))) => {
+        //    return Err(format!(
+        //        "Failed to open database. Is another sparse session running?\n\n{}",
+        //        s
+        //    ));
+        //}
         Err(e) => return Err(format!("{:?}", e)),
     };
 
@@ -84,26 +89,32 @@ async fn login(config: &Config) -> Result<Client, String> {
                     if let Ok(hostname) = hostname::get() {
                         device_name.push_str(&format!(" on {}", hostname.to_string_lossy()));
                     };
-                    let response = client
-                        .login(&config.user, &pw, None, Some(&device_name))
-                        .await;
-                    match response {
+                    let login = client
+                        .matrix_auth()
+                        .login_username(&config.user, &pw)
+                        .device_id(&device_name);
+                    match login.send().await {
                         Ok(response) => {
-                            let session = Session {
-                                access_token: response.access_token,
-                                user_id: response.user_id,
-                                device_id: response.device_id,
+                            let session = MatrixSession {
+                                meta: matrix_sdk::SessionMeta {
+                                    user_id: response.user_id,
+                                    device_id: response.device_id,
+                                },
+                                tokens: matrix_sdk::matrix_auth::MatrixSessionTokens {
+                                    access_token: response.access_token,
+                                    refresh_token: None,
+                                },
                             };
 
                             try_store_session(&config, &session).unwrap();
                             break;
                         }
-                        Err(matrix_sdk::Error::Http(matrix_sdk::HttpError::ClientApi(
-                            matrix_sdk::ruma::api::error::FromHttpResponseError::Http(
-                                matrix_sdk::ruma::api::error::ServerError::Known(r),
+                        Err(matrix_sdk::Error::Http(matrix_sdk::HttpError::Api(
+                            matrix_sdk::ruma::api::error::FromHttpResponseError::Server(
+                                matrix_sdk::RumaApiError::ClientApi(r),
                             ),
                         ))) => {
-                            eprintln!("{}", r.message);
+                            eprintln!("{}", r);
                         }
                         Err(e) => {
                             panic!("Unexpected error: {}", e);
@@ -148,7 +159,7 @@ enum Command {
 #[structopt(author, about)]
 struct Options {
     #[structopt(short = "h", long = "host")]
-    host: Option<Url>,
+    host: Option<matrix_sdk::OwnedServerName>,
     #[structopt(short = "u", long = "user")]
     user: Option<String>,
     #[structopt(short = "c", long = "config")]
@@ -192,7 +203,7 @@ async fn tokio_main(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         let f = PathBuf::from(
             dirs::config_dir()
                 .unwrap()
-                .join(crate::APP_NAME)
+                .join("sparse") //NO_PUSH_master
                 .join("config.lua"),
         );
         if f.exists() {

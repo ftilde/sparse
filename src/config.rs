@@ -1,10 +1,10 @@
+use matrix_sdk::OwnedServerName;
 use rlua::{Lua, RegistryKey, Value};
 use sequence_trie::SequenceTrie;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use url::Url;
 
 use crate::tui_app::tui::{
     actions::{Action, ActionResult, CommandEnvironment, ACTIONS_ARGS_NONE, ACTIONS_ARGS_STRING},
@@ -340,7 +340,7 @@ impl rlua::FromLua<'_> for NotificationStyle {
 
 #[derive(Clone)]
 pub struct Config {
-    pub host: Url,
+    pub host: OwnedServerName,
     pub user: String,
     pub notification_style: NotificationStyle,
     pub file_open_program: String,
@@ -350,25 +350,19 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn user_id(&self) -> Result<String, String> {
-        Ok(format!(
-            "@{}:{}",
-            self.user,
-            self.host
-                .host_str()
-                .ok_or_else(|| "Configured host is not a valid string".to_owned())?
-        ))
+    pub fn user_id(&self) -> String {
+        format!("@{}:{}", self.user, self.host.host())
     }
 
-    pub fn data_dir(&self) -> Result<PathBuf, String> {
-        Ok(dirs::data_local_dir()
+    pub fn data_dir(&self) -> PathBuf {
+        dirs::data_local_dir()
             .unwrap()
             .join(crate::APP_NAME)
-            .join(self.user_id()?))
+            .join(self.user_id())
     }
 
-    pub fn session_file_path(&self) -> Result<PathBuf, String> {
-        Ok(self.data_dir()?.join("session"))
+    pub fn session_file_path(&self) -> PathBuf {
+        self.data_dir().join("session")
     }
 }
 pub struct KeyMaps(HashMap<Mode, KeyMap>);
@@ -385,7 +379,7 @@ impl KeyMaps {
 pub struct ConfigBuilder {
     keymaps: HashMap<Mode, KeyMap>,
     lua: Lua,
-    host: Option<Url>,
+    host: Option<OwnedServerName>,
     user: Option<String>,
     notification_style: NotificationStyle,
     file_open_program: String,
@@ -439,7 +433,7 @@ impl ConfigBuilder {
             CommandEnvironment::new(self.lua),
         ))
     }
-    pub fn set_host(&mut self, host: Url) {
+    pub fn set_host(&mut self, host: OwnedServerName) {
         self.host = Some(host);
     }
     pub fn set_user(&mut self, user: String) {
@@ -561,7 +555,8 @@ impl ConfigBuilder {
                 globals.set(
                     "host",
                     scope.create_function_mut(|_lua_ctx, host_str: String| {
-                        let url = Url::parse(&host_str)
+                        println!("{}", host_str);
+                        let url = matrix_sdk::ServerName::parse(&host_str)
                             .map_err(|e| rlua::Error::RuntimeError(format!("{}", e)))?;
                         *host = Some(url);
                         Ok(())

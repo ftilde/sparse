@@ -1,4 +1,4 @@
-use matrix_sdk::ruma::api::client::r0::uiaa;
+use matrix_sdk::ruma::api::client::uiaa;
 use matrix_sdk::{self, config::SyncSettings, Client};
 use std::collections::HashMap;
 
@@ -21,18 +21,20 @@ pub async fn run(client: Client, ids: Vec<String>) -> Result<(), matrix_sdk::Err
         }
     }
 
-    let session = client.session().await.unwrap();
-    let user_id = session.user_id.as_str();
+    let session = client.session().unwrap();
+    let user_id = session.meta().user_id.as_str();
 
     if let Err(e) = client.delete_devices(&device_ids, None).await {
-        if let Some(info) = e.uiaa_response() {
+        if let Some(info) = e.as_uiaa_response() {
             println!("Logging out other devices requires additional password authentication.");
             match rpassword::read_password_from_tty(Some("Password: ")) {
                 Ok(pw) if pw.is_empty() => {}
                 Ok(pw) => {
-                    let mut auth_data =
-                        uiaa::Password::new(uiaa::UserIdentifier::MatrixId(user_id), &pw);
-                    auth_data.session = info.session.as_deref();
+                    let mut auth_data = uiaa::Password::new(
+                        uiaa::UserIdentifier::UserIdOrLocalpart(user_id.to_string()),
+                        pw,
+                    );
+                    auth_data.session = info.session.clone();
                     let auth_data = uiaa::AuthData::Password(auth_data);
                     client.delete_devices(&device_ids, Some(auth_data)).await?;
                     println!("Done");
