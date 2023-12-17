@@ -203,7 +203,7 @@ async fn tokio_main(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         let f = PathBuf::from(
             dirs::config_dir()
                 .unwrap()
-                .join(APP_NAME) //NO_PUSH_master
+                .join(APP_NAME)
                 .join("config.lua"),
         );
         if f.exists() {

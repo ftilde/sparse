@@ -329,24 +329,31 @@ async fn run_matrix_event_loop(c: Connection) {
                 let timeline = room_info.timeline;
 
                 let mut state = c.state.lock().await;
-                let m = &mut state.rooms.get_mut(&room_id).unwrap().messages;
+                // Lazily insert new rooms if they just now become known to the client
+                let room = match state.rooms.entry(room_id.clone()) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        let room = c.client.get_room(&room_id).unwrap();
+                        entry.insert(RoomState::from_room(&room).await)
+                    }
+                    std::collections::btree_map::Entry::Occupied(r) => r.into_mut(),
+                };
+                let m = &mut room.messages;
                 m.handle_sync_batch(timeline, &response.next_batch);
 
                 use matrix_sdk::ruma::events::AnySyncStateEvent;
-                if let Some(room) = c.client.get_room(&room_id) {
-                    for e in room_info.state {
-                        match e.deserialize() {
-                            Ok(
-                                AnySyncStateEvent::RoomMember(_)
-                                | AnySyncStateEvent::RoomName(_)
-                                | AnySyncStateEvent::RoomCanonicalAlias(_),
-                            ) => {
-                                state.update_room_info(&room).await;
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                tracing::warn!("Failed to deserialize state event {}", e)
-                            }
+                let room = c.client.get_room(&room_id).unwrap();
+                for e in room_info.state {
+                    match e.deserialize() {
+                        Ok(
+                            AnySyncStateEvent::RoomMember(_)
+                            | AnySyncStateEvent::RoomName(_)
+                            | AnySyncStateEvent::RoomCanonicalAlias(_),
+                        ) => {
+                            state.update_room_info(&room).await;
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!("Failed to deserialize state event {}", e)
                         }
                     }
                 }
@@ -463,22 +470,6 @@ pub async fn run(
     config: crate::config::Config,
     command_environment: tui::actions::CommandEnvironment,
 ) -> Result<(), matrix_sdk::Error> {
-    // Fetch the initial list of rooms. This is required (for some reason) because joined_rooms()
-    // returns an empty vec on the first start for some reason.
-    //
-    // Also: We have to enable lazy loading of members because otherwise the calculation of room
-    // display names is broken. (There is a note about that in the implementation in matrix_sdk...)
-    use matrix_sdk::ruma::api::client::filter::{FilterDefinition, LazyLoadOptions};
-    use matrix_sdk::ruma::api::client::sync::sync_events::v3::Filter;
-    client
-        .sync_once(SyncSettings::new().filter({
-            let mut filter_def = FilterDefinition::empty();
-            filter_def.room.state.lazy_load_options = LazyLoadOptions::Enabled {
-                include_redundant_members: false,
-            };
-            Filter::FilterDefinition(filter_def)
-        }))
-        .await?;
     let mut rooms = BTreeMap::new();
     for room in client.joined_rooms() {
         let id = room.room_id();
