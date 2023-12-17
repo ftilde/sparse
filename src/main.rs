@@ -92,7 +92,7 @@ async fn login(config: &Config) -> Result<Client, String> {
                     let login = client
                         .matrix_auth()
                         .login_username(&config.user, &pw)
-                        .device_id(&device_name);
+                        .initial_device_display_name(&device_name);
                     match login.send().await {
                         Ok(response) => {
                             let session = MatrixSession {
@@ -203,7 +203,7 @@ async fn tokio_main(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         let f = PathBuf::from(
             dirs::config_dir()
                 .unwrap()
-                .join("sparse") //NO_PUSH_master
+                .join(APP_NAME) //NO_PUSH_master
                 .join("config.lua"),
         );
         if f.exists() {
