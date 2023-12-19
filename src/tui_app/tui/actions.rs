@@ -628,6 +628,22 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
         c.state.tui.last_error_message = Some(s);
         ActionResult::Ok
     }),
+    ("leave_room", |c| {
+        if let Some(room) = c.state.current_room_state_mut() {
+            if let Some(joined_room) = c.client.get_room(&room.id) {
+                tokio::spawn(async move {
+                    if let Err(e) = joined_room.leave().await {
+                        tracing::error!("Failed to leave room: {:?}", e);
+                    }
+                });
+                ActionResult::Ok
+            } else {
+                ActionResult::Error("Room not joined".to_owned())
+            }
+        } else {
+            ActionResult::Error("No current room".to_owned())
+        }
+    }),
 ];
 
 pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
