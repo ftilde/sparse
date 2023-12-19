@@ -851,6 +851,25 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
             Err(e) => ActionResult::Error(format!("{}", e)),
         }
     }),
+    ("invite", |c, s| match matrix_sdk::ruma::UserId::parse(s) {
+        Ok(uid) => {
+            if let Some(room) = c.state.current_room_state_mut() {
+                if let Some(joined_room) = c.client.get_room(&room.id) {
+                    tokio::spawn(async move {
+                        if let Err(e) = joined_room.invite_user_by_id(&uid).await {
+                            tracing::error!("Failed to invite: {:?}", e);
+                        }
+                    });
+                    ActionResult::Ok
+                } else {
+                    ActionResult::Error("Room not joined".to_owned())
+                }
+            } else {
+                ActionResult::Error("No current room".to_owned())
+            }
+        }
+        Err(e) => ActionResult::Error(format!("{}", e)),
+    }),
 ];
 
 fn with_msg_edit(
