@@ -815,6 +815,17 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
         Ok(r) => r,
         Err(e) => ActionResult::Error(format!("{}", e)),
     }),
+    ("create_room", |c, s| {
+        let mut req = matrix_sdk::ruma::api::client::room::create_room::v3::Request::default();
+        req.name = Some(s);
+        let client = c.client.clone();
+        tokio::spawn(async move {
+            if let Err(e) = client.create_room(req).await {
+                tracing::error!("Cannot create room: {:?}", e);
+            }
+        });
+        ActionResult::Ok
+    }),
 ];
 
 fn with_msg_edit(
