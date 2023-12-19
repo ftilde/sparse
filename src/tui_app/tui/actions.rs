@@ -617,6 +617,17 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     ("clear_auxline", |c| {
         c.state.tui.aux_line_state.current_mut().clear().into()
     }),
+    ("list_invited_rooms", |c| {
+        let rooms = c.client.invited_rooms();
+        let mut s = "Invited: ".to_owned();
+        for room in rooms {
+            s.push_str(&format!("{}, ", room.room_id()));
+        }
+        // TODO: semantically not that nice that we use the error message field. Maybe rename it to
+        // status or something?
+        c.state.tui.last_error_message = Some(s);
+        ActionResult::Ok
+    }),
 ];
 
 pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
@@ -825,6 +836,20 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
             }
         });
         ActionResult::Ok
+    }),
+    ("join_room", |c, s| {
+        match matrix_sdk::ruma::RoomId::parse(s) {
+            Ok(rid) => {
+                let client = c.client.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = client.join_room_by_id(&rid).await {
+                        tracing::error!("Cannot join room: {:?}", e);
+                    }
+                });
+                ActionResult::Ok
+            }
+            Err(e) => ActionResult::Error(format!("{}", e)),
+        }
     }),
 ];
 
