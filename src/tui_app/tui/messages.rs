@@ -709,6 +709,7 @@ impl DrawEvent for AnySyncStateEvent {
                     Invited => Some(" was invited."),
                     KickedAndBanned => Some(" was kicked and banned."),
                     InvitationRejected => Some(" rejected the invitation."),
+                    InvitationAccepted => Some(" accepted the invitation."),
                     ProfileChanged {
                         displayname_change: Some(_s),
                         avatar_url_change: _,
