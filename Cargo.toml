@@ -16,7 +16,6 @@ debug = 1
 
 [dependencies]
 tokio = { version = "1.6.0", features = ["full", "rt-multi-thread"] }
-url = "2.2.0" #NO_PUSH_master remove if possible
 chrono = "0.4"
 dirs = "*"
 tracing-appender = "0.2"
