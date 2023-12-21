@@ -3,12 +3,6 @@ use matrix_sdk::{config::SyncSettings, Client};
 pub async fn run(client: Client) -> Result<(), matrix_sdk::Error> {
     let settings = SyncSettings::new().full_state(true);
 
-    //NO_PUSH_main not sure what's going on here
-    //let settings = if let Some(token) = client.sync_token().await {
-    //    settings.token(token)
-    //} else {
-    //    settings
-    //};
     let _ = client.sync_once(settings).await?;
 
     let response = client

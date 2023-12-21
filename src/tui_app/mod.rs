@@ -103,7 +103,7 @@ impl RoomState {
         let name = room.display_name().await.unwrap().to_string();
         let latest_read_message = room
             .load_user_receipt(
-                ReceiptType::ReadPrivate, /* NO_PUSH_master: not sure?? */
+                ReceiptType::ReadPrivate,
                 ReceiptThread::Main,
                 room.own_user_id(),
             )
