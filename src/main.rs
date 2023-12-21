@@ -65,13 +65,6 @@ async fn login(config: &Config) -> Result<Client, String> {
     // create a new Client with the given homeserver url and config
     let client = match client.build().await {
         Ok(client) => client,
-        //NO_PUSH_master: Check if there are similar errors with sqlite
-        //Err(matrix_sdk::Error::StateStore(matrix_sdk::StoreError::Sled(s))) => {
-        //    return Err(format!(
-        //        "Failed to open database. Is another sparse session running?\n\n{}",
-        //        s
-        //    ));
-        //}
         Err(e) => return Err(format!("{:?}", e)),
     };
 
