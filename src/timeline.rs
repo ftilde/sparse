@@ -332,7 +332,7 @@ impl RoomTimelineCache {
                         }
                         None
                     }
-                    AnySyncMessageLikeEvent::Message(m) => {
+                    AnySyncMessageLikeEvent::RoomMessage(m) => {
                         let m = m.as_original().unwrap();
                         if let Some(Relation::Replacement(r)) = &m.content.relates_to {
                             self.edits_to_original
