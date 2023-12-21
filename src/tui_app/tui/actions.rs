@@ -619,11 +619,15 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
     ("clear_auxline", |c| {
         c.state.tui.aux_line_state.current_mut().clear().into()
     }),
-    ("list_invited_rooms", |c| {
+    ("list_room_invitations", |c| {
         let rooms = c.client.invited_rooms();
-        let mut s = "Invited: ".to_owned();
+        let mut s = "Invited (name: id): ".to_owned();
         for room in rooms {
-            s.push_str(&format!("{}, ", room.room_id()));
+            s.push_str(&format!(
+                "\n{}: {}",
+                room.name().as_deref().unwrap_or(""),
+                room.room_id(),
+            ));
         }
         // TODO: semantically not that nice that we use the error message field. Maybe rename it to
         // status or something?
@@ -853,7 +857,7 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
         });
         ActionResult::Ok
     }),
-    ("join_room", |c, s| {
+    ("join_by_id", |c, s| {
         match matrix_sdk::ruma::RoomId::parse(s) {
             Ok(rid) => {
                 let client = c.client.clone();
