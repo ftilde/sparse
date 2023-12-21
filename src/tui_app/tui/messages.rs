@@ -369,8 +369,12 @@ struct TuiEvent<'a> {
     tasks: Tasks<'a>,
 }
 
-pub fn strip_body(mut body: &str, is_rich_reply: bool) -> &str {
-    if is_rich_reply {
+pub fn strip_body<'a>(
+    mut body: &'a str,
+    event_id: &EventId,
+    messages: &crate::timeline::RoomTimelineCache,
+) -> &'a str {
+    if is_rich_reply(event_id, messages) {
         while let [b'>', b' ', ..] = body.as_bytes() {
             if let Some(e) = body.find('\n') {
                 body = &body[e + 1..];
@@ -382,9 +386,15 @@ pub fn strip_body(mut body: &str, is_rich_reply: bool) -> &str {
             body = &body[1..];
         }
     }
+    if is_edit(event_id, messages) {
+        body = body.strip_prefix("* ").unwrap_or(body)
+    }
     body
 }
 
+pub fn is_edit(event_id: &EventId, messages: &crate::timeline::RoomTimelineCache) -> bool {
+    messages.message_from_id(event_id).unwrap().is_edit()
+}
 pub fn is_rich_reply(event_id: &EventId, messages: &crate::timeline::RoomTimelineCache) -> bool {
     if let Some(crate::timeline::Event::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
         SyncMessageLikeEvent::Original(m),
@@ -479,8 +489,7 @@ impl DrawEvent for OriginalSyncMessageLikeEvent<RoomMessageEventContent> {
                 let _ = write!(c, ": ");
                 let start = c.get_col();
                 c.set_line_start_column(start);
-                let rich = is_rich_reply(&self.event_id, &room_state.messages);
-                c.write(strip_body(&text.body, rich));
+                c.write(strip_body(&text.body, &self.event_id, &room_state.messages));
             }
             MessageType::Image(img) => {
                 c.set_style_modifier(StyleModifier::new().italic(true));
@@ -839,14 +848,8 @@ fn draw_diff<T: unsegen::base::CursorTarget>(
     {
         write_user(c, &this.sender, room_state);
         c.write(": ");
-        let prev_body = strip_body(
-            prev.content.body(),
-            is_rich_reply(&prev.event_id, &room_state.messages),
-        );
-        let this_body = strip_body(
-            this.content.body(),
-            is_rich_reply(&this.event_id, &room_state.messages),
-        );
+        let prev_body = strip_body(prev.content.body(), &prev.event_id, &room_state.messages);
+        let this_body = strip_body(this.content.body(), &this.event_id, &room_state.messages);
         for d in diff::chars(prev_body, this_body) {
             match d {
                 diff::Result::Left(l) => {

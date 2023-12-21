@@ -21,10 +21,7 @@ impl Filter {
             Filter::Body(body) => {
                 if let Event::MessageLike(AnySyncMessageLikeEvent::RoomMessage(m)) = event {
                     let m = m.as_original().unwrap();
-                    body.is_match(crate::tui_app::tui::messages::strip_body(
-                        m.content.body(),
-                        false,
-                    ))
+                    body.is_match(m.content.body())
                 } else {
                     false
                 }

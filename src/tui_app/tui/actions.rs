@@ -489,7 +489,8 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                             super::SendMessageType::Edit(m.event_id().into(), latest.clone());
                         room.tui.msg_edit.set(super::messages::strip_body(
                             latest.content.body(),
-                            super::messages::is_rich_reply(eid, &room.messages),
+                            eid,
+                            &room.messages,
                         ));
                         ActionResult::Ok
                     } else {

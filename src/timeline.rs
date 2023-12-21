@@ -217,6 +217,9 @@ impl<'a> TimelineEntry<'a> {
     pub fn event_id(self) -> &'a EventId {
         self.original().event_id()
     }
+    pub fn is_edit(self) -> bool {
+        matches!(self, Self::Edited { .. })
+    }
 }
 
 const QUERY_BATCH_SIZE_LIMIT: u32 = 10;
