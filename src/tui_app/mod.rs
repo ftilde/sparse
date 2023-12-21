@@ -296,60 +296,27 @@ async fn try_reset_timeline_cache(c: &Connection, room_id: &RoomId) {
 }
 
 async fn run_matrix_event_loop(c: Connection) {
-    // since we called `sync_once` before we entered our sync loop we must pass
-    // that sync token to `sync`
-    let settings = SyncSettings::default();
     let client = c.client.clone();
 
     let c = &c;
-    client
-        .sync_with_callback(settings, |response| async move {
-            for (room_id, notifications) in response.notifications {
-                if let Some(room) = c.client.get_room(&room_id) {
-                    for notification in notifications {
-                        handle_notification(c, &room, notification).await;
+    loop {
+        let settings = SyncSettings::default();
+        let res = client
+            .sync_with_callback(settings, |response| async move {
+                for (room_id, notifications) in response.notifications {
+                    if let Some(room) = c.client.get_room(&room_id) {
+                        for notification in notifications {
+                            handle_notification(c, &room, notification).await;
+                        }
                     }
                 }
-            }
-            for e in response.to_device {
-                match e.deserialize() {
-                    Ok(AnyToDeviceEvent::RoomKey(e)) => {
-                        try_reset_timeline_cache(&c, &e.content.room_id).await
-                    }
-                    Ok(AnyToDeviceEvent::ForwardedRoomKey(e)) => {
-                        try_reset_timeline_cache(&c, &e.content.room_id).await
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("Failed to deserialize state event {}", e)
-                    }
-                }
-            }
-            for (room_id, room_info) in response.rooms.join {
-                let timeline = room_info.timeline;
-
-                let mut state = c.state.lock().await;
-                // Lazily insert new rooms if they just now become known to the client
-                let room = match state.rooms.entry(room_id.clone()) {
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        let room = c.client.get_room(&room_id).unwrap();
-                        entry.insert(RoomState::from_room(&room).await)
-                    }
-                    std::collections::btree_map::Entry::Occupied(r) => r.into_mut(),
-                };
-                let m = &mut room.messages;
-                m.handle_sync_batch(timeline, &response.next_batch);
-
-                use matrix_sdk::ruma::events::AnySyncStateEvent;
-                let room = c.client.get_room(&room_id).unwrap();
-                for e in room_info.state {
+                for e in response.to_device {
                     match e.deserialize() {
-                        Ok(
-                            AnySyncStateEvent::RoomMember(_)
-                            | AnySyncStateEvent::RoomName(_)
-                            | AnySyncStateEvent::RoomCanonicalAlias(_),
-                        ) => {
-                            state.update_room_info(&room).await;
+                        Ok(AnyToDeviceEvent::RoomKey(e)) => {
+                            try_reset_timeline_cache(&c, &e.content.room_id).await
+                        }
+                        Ok(AnyToDeviceEvent::ForwardedRoomKey(e)) => {
+                            try_reset_timeline_cache(&c, &e.content.room_id).await
                         }
                         Ok(_) => {}
                         Err(e) => {
@@ -357,13 +324,49 @@ async fn run_matrix_event_loop(c: Connection) {
                         }
                     }
                 }
-            }
+                for (room_id, room_info) in response.rooms.join {
+                    let timeline = room_info.timeline;
 
-            c.update().await;
-            LoopCtrl::Continue
-        })
-        .await
-        .unwrap();
+                    let mut state = c.state.lock().await;
+                    // Lazily insert new rooms if they just now become known to the client
+                    let room = match state.rooms.entry(room_id.clone()) {
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            let room = c.client.get_room(&room_id).unwrap();
+                            entry.insert(RoomState::from_room(&room).await)
+                        }
+                        std::collections::btree_map::Entry::Occupied(r) => r.into_mut(),
+                    };
+                    let m = &mut room.messages;
+                    m.handle_sync_batch(timeline, &response.next_batch);
+
+                    use matrix_sdk::ruma::events::AnySyncStateEvent;
+                    let room = c.client.get_room(&room_id).unwrap();
+                    for e in room_info.state {
+                        match e.deserialize() {
+                            Ok(
+                                AnySyncStateEvent::RoomMember(_)
+                                | AnySyncStateEvent::RoomName(_)
+                                | AnySyncStateEvent::RoomCanonicalAlias(_),
+                            ) => {
+                                state.update_room_info(&room).await;
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                tracing::warn!("Failed to deserialize state event {}", e)
+                            }
+                        }
+                    }
+                }
+
+                c.update().await;
+                LoopCtrl::Continue
+            })
+            .await;
+
+        if let Err(e) = res {
+            tracing::error!("Error in sync loop: {}", e);
+        }
+    }
 }
 
 #[derive(Clone)]
