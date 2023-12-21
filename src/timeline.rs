@@ -281,11 +281,11 @@ impl RoomTimelineCache {
         self.has_undecrypted_messages
     }
 
-    fn pre_process_message(&mut self, mut event: Event) -> Option<Event> {
+    fn pre_process_message(&mut self, event: Event) -> Option<Event> {
         if let Event::MessageLike(AnySyncMessageLikeEvent::RoomEncrypted(_)) = &event {
             self.has_undecrypted_messages = true;
         }
-        match &mut event {
+        match &event {
             Event::MessageLike(msg) => {
                 let eid = msg.event_id().to_owned();
                 let Some(_content) = msg.original_content() else {
@@ -333,29 +333,17 @@ impl RoomTimelineCache {
                         None
                     }
                     AnySyncMessageLikeEvent::RoomMessage(m) => {
-                        if let matrix_sdk::ruma::events::SyncMessageLikeEvent::Original(m) = m {
-                            if let Some(Relation::Replacement(r)) = &m.content.relates_to {
-                                use matrix_sdk::ruma::events::room::message::MessageType;
-                                // Fix stupid "* " prefix from the text content of room messages,
-                                // because apparently that is what clients do when sending edits
-                                // (at least sparse, because that is how it is implemented in
-                                // matrix-sdk), but we display the edit status differently.
-                                if let MessageType::Text(t) = &mut m.content.msgtype {
-                                    t.body =
-                                        t.body.strip_prefix("* ").unwrap_or(&t.body).to_owned();
-                                }
-                                self.edits_to_original
-                                    .insert(eid.into(), r.event_id.clone());
-                                self.msg_to_edits
-                                    .entry(r.event_id.clone())
-                                    .or_default()
-                                    .push(event);
-                                None
-                            } else {
-                                Some(event)
-                            }
+                        let m = m.as_original().unwrap();
+                        if let Some(Relation::Replacement(r)) = &m.content.relates_to {
+                            self.edits_to_original
+                                .insert(eid.into(), r.event_id.clone());
+                            self.msg_to_edits
+                                .entry(r.event_id.clone())
+                                .or_default()
+                                .push(event);
+                            None
                         } else {
-                            panic!("Should be original event");
+                            Some(event)
                         }
                     }
                     o => Some(AnySyncTimelineEvent::MessageLike(o.clone())),
