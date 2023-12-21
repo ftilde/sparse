@@ -17,7 +17,7 @@ use std::path::PathBuf;
 mod config;
 use config::{Config, ConfigBuilder};
 
-const APP_NAME: &str = concat!(env!("CARGO_PKG_NAME"), "-new"); //NO_PUSH_master
+const APP_NAME: &str = env!("CARGO_PKG_NAME");
 const LOG_RETENTION_POLICY: log::RetentionPolicy = log::RetentionPolicy::Keep(3);
 
 fn try_load_session(config: &Config) -> Result<MatrixSession, Box<dyn std::error::Error>> {
