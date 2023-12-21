@@ -280,9 +280,10 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                                 matrix_sdk::ruma::events::room::message::ForwardThread::No,
                                 matrix_sdk::ruma::events::room::message::AddMentions::No,
                             );
-                            //TODO NO_PUSH_master see if this is still required...
-
                             // Fix up id to point to the original message id in case of edits
+                            // This is still required (1) for sparse to find the original message
+                            // (although this could be fixed!), but importantly, (2) for element to
+                            // display the relation correctly...
                             repl.relates_to = Some(Relation::Reply {
                                 in_reply_to: matrix_sdk::ruma::events::relation::InReplyTo::new(
                                     prev_id.into(),
@@ -290,14 +291,14 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
                             });
                             repl
                         }
-                        SendMessageType::Edit(prev_id, _prev_msg) => {
+                        SendMessageType::Edit(prev_id, prev_msg) => {
                             let m = RoomMessageEventContent::text_plain(msg);
                             let m = m.make_replacement(
                                 matrix_sdk::ruma::events::room::message::ReplacementMetadata::new(
                                     prev_id.into(),
                                     None,
                                 ),
-                                None, //TODO NO_PUSH_master: Not sure if anything goes here...
+                                Some(&prev_msg.into_full_event(room.id.clone())),
                             );
                             m
                         }
@@ -718,8 +719,6 @@ pub const ACTIONS_ARGS_STRING: &[(&'static str, ActionArgsString)] = &[
                 );
                 if let Some(joined_room) = c.client.get_room(&room.id) {
                     tokio::spawn(async move {
-                        //NO_PUSH_master: make sure this is actually fixed
-                        // The change below can be reversed if matrix-sdk issue #470 is fixed.
                         if let Err(e) = joined_room.send(reaction).await {
                             tracing::error!("Cannot react to event: {:?}", e);
                         }
