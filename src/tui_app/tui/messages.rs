@@ -152,19 +152,18 @@ impl Messages<'_> {
         room: &RoomId,
         state: &crate::tui_app::RoomState,
     ) {
-        let msg_id = match state.messages.walk_from_newest() {
-            EventWalkResultNewest::Message(m) => m,
-            EventWalkResultNewest::End => return,
+        let mut query_for_newest = None;
+        let newest_id = match state.messages.walk_from_newest() {
+            EventWalkResultNewest::Message(m) => Some(m),
+            EventWalkResultNewest::End => None,
             EventWalkResultNewest::RequiresFetch(latest) => {
-                if state.messages.reached_newest() {
+                query_for_newest = Some(if state.messages.reached_newest() {
                     // We have received the latest events, but none that are suitable for display
                     // (e.g. only state updates or message deletions)
-                    self.1
-                        .set_message_query(room.to_owned(), MessageQuery::BeforeCache);
+                    MessageQuery::BeforeCache
                 } else {
-                    self.1
-                        .set_message_query(room.to_owned(), MessageQuery::AfterCache);
-                }
+                    MessageQuery::AfterCache
+                });
 
                 let split = (window.get_height() - 1).from_origin();
                 let (above, mut below) = match window.split(split) {
@@ -179,14 +178,15 @@ impl Messages<'_> {
                 } else {
                     return;
                 }
-                if let Some(latest) = latest {
-                    latest
-                } else {
-                    return;
-                }
+                latest
             }
         };
-        self.draw_up_from(window, hints, EventWalkResult::Message(msg_id), room, state);
+        if let Some(msg_id) = newest_id {
+            self.draw_up_from(window, hints, EventWalkResult::Message(msg_id), room, state);
+        }
+        if let Some(query) = query_for_newest {
+            self.1.set_message_query(room.to_owned(), query);
+        }
     }
     fn draw_specific(
         &self,
