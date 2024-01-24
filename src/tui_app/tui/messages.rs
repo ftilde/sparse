@@ -163,7 +163,7 @@ impl Messages<'_> {
                         .set_message_query(room.to_owned(), MessageQuery::BeforeCache);
                 } else {
                     self.1
-                        .set_message_query(room.to_owned(), MessageQuery::Newest);
+                        .set_message_query(room.to_owned(), MessageQuery::AfterCache);
                 }
 
                 let split = (window.get_height() - 1).from_origin();

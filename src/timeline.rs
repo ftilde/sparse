@@ -410,24 +410,6 @@ impl RoomTimelineCache {
                     CacheEndState::Open
                 };
             }
-            MessageQuery::Newest => {
-                if num_events >= QUERY_BATCH_SIZE_LIMIT as usize {
-                    // We fetch from the latest sync token backwards, possibly up to the cache end.
-                    // We cannot compare sync tokens, so the only thing we know here, is that we
-                    // DON'T have to invalidate the cache, if we get less than
-                    // QUERY_BATCH_SIZE_LIMIT. In all other cases we just have to assume that the
-                    // cache is invalid now. :(
-                    self.begin_token = Some(batch.end.unwrap());
-                    self.begin = CacheEndState::Open;
-                    self.clear_timeline();
-                }
-                self.end_token = Some(batch.start);
-                self.end = CacheEndState::Reached;
-
-                for msg in transform_events(msgs.into_iter().rev().map(|e| e.into())) {
-                    self.append(msg);
-                }
-            }
         }
     }
 
@@ -557,23 +539,17 @@ impl RoomTimelineCache {
     ) -> impl std::future::Future<Output = matrix_sdk::Result<MessageQueryResult>> {
         let (query, dir, from, to) = {
             match (query, &self.begin_token, &self.end_token) {
-                (MessageQuery::AfterCache, _, Some(t)) => (
+                (MessageQuery::AfterCache, _, t) => (
                     MessageQuery::AfterCache,
                     Direction::Forward,
-                    t.clone(),
-                    room.last_prev_batch(), //TODO: not sure if this is correct?
-                ),
-                (MessageQuery::BeforeCache, Some(t), _) => (
-                    MessageQuery::BeforeCache,
-                    Direction::Backward,
-                    t.clone(),
+                    t.clone().unwrap_or_else(|| room.last_prev_batch().unwrap()),
                     None,
                 ),
-                (_, _, t) => (
-                    MessageQuery::Newest,
+                (MessageQuery::BeforeCache, t, _) => (
+                    MessageQuery::BeforeCache,
                     Direction::Backward,
-                    room.last_prev_batch().unwrap(), //TODO: not sure if this is correct?
-                    t.clone(),
+                    t.clone().unwrap_or_else(|| room.last_prev_batch().unwrap()),
+                    None,
                 ),
             }
         };
@@ -609,7 +585,6 @@ fn transform_events(i: impl Iterator<Item = SyncTimelineEvent>) -> impl Iterator
 pub enum MessageQuery {
     BeforeCache,
     AfterCache,
-    Newest,
 }
 
 pub struct MessageQueryResult {
