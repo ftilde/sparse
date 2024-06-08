@@ -374,7 +374,7 @@ pub fn strip_body<'a>(
     event_id: &EventId,
     messages: &crate::timeline::RoomTimelineCache,
 ) -> &'a str {
-    if is_rich_reply(event_id, messages) {
+    if is_rich_reply(event_id, messages) || is_edit(event_id, messages) {
         while let [b'>', b' ', ..] = body.as_bytes() {
             if let Some(e) = body.find('\n') {
                 body = &body[e + 1..];
