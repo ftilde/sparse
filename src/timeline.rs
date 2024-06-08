@@ -357,23 +357,34 @@ impl RoomTimelineCache {
     }
 
     fn append(&mut self, msg: Event) {
-        if let Some(msg) = self.pre_process_message(msg) {
-            let event_id = msg.event_id().to_owned();
-            self.full_timeline.append(event_id.clone());
-            if let Some(f) = &mut self.filtered_timeline {
-                f.try_append(&msg);
+        // Somewhat annoying: There is a race condition between fetching messages manually
+        // and receiving messages via a sync. An example of this would be one where we
+        // first notice that we are missing messages from the store (e.g. because there are
+        // any) and request the latest messages BEFORE receiving the first sync, which then
+        // contains the (duplicate) messages that have already been fetched. This would
+        // typically happen on startup of the application.
+        if !self.events.contains_key(msg.event_id()) {
+            if let Some(msg) = self.pre_process_message(msg) {
+                let event_id = msg.event_id().to_owned();
+                self.full_timeline.append(event_id.clone());
+                if let Some(f) = &mut self.filtered_timeline {
+                    f.try_append(&msg);
+                }
+                self.events.insert(event_id, msg);
             }
-            self.events.insert(event_id, msg);
         }
     }
     fn prepend(&mut self, msg: Event) {
-        if let Some(msg) = self.pre_process_message(msg) {
-            let event_id = msg.event_id().to_owned();
-            self.full_timeline.prepend(event_id.clone());
-            if let Some(f) = &mut self.filtered_timeline {
-                f.try_prepend(&msg);
+        // Avoid race condition. See `append`.
+        if !self.events.contains_key(msg.event_id()) {
+            if let Some(msg) = self.pre_process_message(msg) {
+                let event_id = msg.event_id().to_owned();
+                self.full_timeline.prepend(event_id.clone());
+                if let Some(f) = &mut self.filtered_timeline {
+                    f.try_prepend(&msg);
+                }
+                self.events.insert(event_id, msg);
             }
-            self.events.insert(event_id, msg);
         }
     }
 
