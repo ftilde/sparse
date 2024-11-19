@@ -158,8 +158,9 @@ end)
 bind('p', 'normal', function(c)
     c:cursor_move_forward('cell')
     content = c:get_clipboard()
+    result = c:type(content)
     c:cursor_move_backward('cell')
-    return c:type(content)
+    return result
 end)
 
 -- insert mode
