@@ -408,9 +408,9 @@ pub const ACTIONS_ARGS_NONE: &[(&'static str, ActionArgsNone)] = &[
         if let Some(room) = c.state.current_room_state_mut() {
             if let super::MessageSelection::Specific(eid) = &room.tui.selection {
                 if let Some(m) = room.messages.message_from_id(&eid) {
-                    if let Some(Event::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+                    if let Event::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
                         SyncMessageLikeEvent::Original(message),
-                    ))) = m.latest()
+                    )) = m.original()
                     {
                         if let Some(Relation::Reply { in_reply_to: rel }) =
                             &message.content.relates_to
