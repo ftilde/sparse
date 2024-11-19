@@ -599,7 +599,7 @@ impl ConfigBuilder {
                 for (n, _) in ACTIONS_ARGS_NONE {
                     lua_ctx
                         .load(&format!("{f} = function(c) return c:{f}() end", f = n))
-                        .eval()?;
+                        .eval::<()>()?;
                 }
 
                 for (n, _) in ACTIONS_ARGS_STRING {
@@ -609,7 +609,7 @@ impl ConfigBuilder {
                 add_global_fun(&lua_ctx, "cursor_move_backward", 1)?;
                 add_global_fun(&lua_ctx, "cursor_delete", 2)?;
 
-                lua_ctx.load(source).eval()?;
+                lua_ctx.load(source).eval::<()>()?;
                 Ok(())
             })
         })

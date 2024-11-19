@@ -942,11 +942,9 @@ impl DrawEvent for TimelineEntry<'_> {
 }
 
 fn write_time<T: unsegen::base::CursorTarget>(c: &mut Cursor<T>, event: &crate::timeline::Event) {
-    use chrono::TimeZone;
     let send_time_secs_unix = event.origin_server_ts().as_secs();
-    let send_time_naive =
-        chrono::naive::NaiveDateTime::from_timestamp_opt(send_time_secs_unix.into(), 0).unwrap();
-    let send_time = chrono::Local.from_utc_datetime(&send_time_naive);
+    let send_time = chrono::DateTime::from_timestamp(send_time_secs_unix.into(), 0).unwrap();
+    let send_time: chrono::DateTime<chrono::Local> = send_time.into();
     let time_str = send_time.format("%m-%d %H:%M");
     let _ = write!(c, "{} ", time_str);
 }

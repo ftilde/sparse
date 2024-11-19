@@ -47,7 +47,7 @@ impl<'a> CommandContext<'a> {
                     }
                     Err(e) => return Err(e),
                 };
-                lua_ctx.load(cmd).eval()?;
+                lua_ctx.load(cmd).eval::<()>()?;
                 f.call::<_, ActionResult>(c)
             })
         })
