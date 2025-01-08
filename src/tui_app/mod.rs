@@ -1,18 +1,17 @@
 use matrix_sdk::{
     self,
     config::SyncSettings,
+    deserialized_responses::RawAnySyncOrStrippedTimelineEvent,
     room::Room,
     ruma::{
-        api::client::push::get_notifications::v3::Notification,
         events::{
             receipt::{ReceiptThread, ReceiptType},
-            AnyMessageLikeEventContent, AnySyncTimelineEvent,
+            room::message::MessageType,
+            AnyMessageLikeEventContent, AnySyncTimelineEvent, AnyToDeviceEvent,
         },
-    },
-    ruma::{
-        events::{room::message::MessageType, AnyToDeviceEvent},
         OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
     },
+    sync::Notification,
     Client, LoopCtrl,
 };
 
@@ -100,7 +99,7 @@ pub struct RoomState {
 
 impl RoomState {
     async fn from_room(room: &Room) -> Self {
-        let name = room.display_name().await.unwrap().to_string();
+        let name = room.compute_display_name().await.unwrap().to_string();
         let latest_read_message = room
             .load_user_receipt(
                 ReceiptType::ReadPrivate,
@@ -176,7 +175,7 @@ impl State {
     }
     async fn update_room_info(&mut self, room: &Room) {
         if let Some(r) = self.rooms.get_mut(room.room_id()) {
-            r.name = room.display_name().await.unwrap().to_string();
+            r.name = room.compute_display_name().await.unwrap().to_string();
             r.user_colors = calculate_user_colors(room).await;
         } else {
             self.rooms
@@ -211,59 +210,61 @@ async fn handle_notification(c: &Connection, room: &Room, notification: Notifica
         .any(|t| matches!(t, matrix_sdk::ruma::push::Action::Notify))
     {
         use crate::config::NotificationStyle;
-        match notification.event.deserialize() {
-            Ok(e) => {
-                if Some(e.sender()) != c.client.user_id().as_deref() {
-                    let mut notification = notify_rust::Notification::new();
-                    let sender = e.sender().to_string();
-                    let group_string = if room.is_direct().await.unwrap() {
-                        format!("{}", sender)
-                    } else {
-                        let g = room.display_name().await.unwrap().to_string();
-                        format!("{} in {}", sender, g)
-                    };
-                    let content = if let AnySyncTimelineEvent::MessageLike(m) = e {
-                        if let Some(AnyMessageLikeEventContent::RoomMessage(m)) =
-                            m.original_content()
-                        {
-                            match m.msgtype {
-                                MessageType::Text(t) => t.body,
-                                MessageType::Image(_) => String::from("sent an image"),
-                                MessageType::Audio(_) => String::from("sent an audio message"),
-                                MessageType::Video(_) => String::from("sent a video"),
-                                MessageType::File(_) => String::from("sent a file"),
-                                _ => String::new(),
+        if let RawAnySyncOrStrippedTimelineEvent::Sync(raw) = notification.event {
+            match raw.deserialize() {
+                Ok(e) => {
+                    if Some(e.sender()) != c.client.user_id().as_deref() {
+                        let mut notification = notify_rust::Notification::new();
+                        let sender = e.sender().to_string();
+                        let group_string = if room.is_direct().await.unwrap() {
+                            format!("{}", sender)
+                        } else {
+                            let g = room.compute_display_name().await.unwrap().to_string();
+                            format!("{} in {}", sender, g)
+                        };
+                        let content = if let AnySyncTimelineEvent::MessageLike(m) = e {
+                            if let Some(AnyMessageLikeEventContent::RoomMessage(m)) =
+                                m.original_content()
+                            {
+                                match m.msgtype {
+                                    MessageType::Text(t) => t.body,
+                                    MessageType::Image(_) => String::from("sent an image"),
+                                    MessageType::Audio(_) => String::from("sent an audio message"),
+                                    MessageType::Video(_) => String::from("sent a video"),
+                                    MessageType::File(_) => String::from("sent a file"),
+                                    _ => String::new(),
+                                }
+                            } else {
+                                String::new()
                             }
                         } else {
                             String::new()
+                        };
+                        match c.config.notification_style {
+                            NotificationStyle::Disabled => {}
+                            NotificationStyle::NameOnly => {
+                                notification.summary(&format!("{}", sender));
+                            }
+                            NotificationStyle::NameAndGroup => {
+                                notification.summary(&group_string);
+                            }
+                            NotificationStyle::Full => {
+                                notification.summary(&group_string);
+                                notification.body(&format!("{}", content));
+                            }
                         }
-                    } else {
-                        String::new()
-                    };
-                    match c.config.notification_style {
-                        NotificationStyle::Disabled => {}
-                        NotificationStyle::NameOnly => {
-                            notification.summary(&format!("{}", sender));
+                        if !matches!(c.config.notification_style, NotificationStyle::Disabled) {
+                            match notification.show() {
+                                Ok(handle) => notification_handle = Some(handle),
+                                Err(e) => tracing::error!("Failed to show notification {}", e),
+                            }
+                            bell = Some(Event::Bell);
                         }
-                        NotificationStyle::NameAndGroup => {
-                            notification.summary(&group_string);
-                        }
-                        NotificationStyle::Full => {
-                            notification.summary(&group_string);
-                            notification.body(&format!("{}", content));
-                        }
-                    }
-                    if !matches!(c.config.notification_style, NotificationStyle::Disabled) {
-                        match notification.show() {
-                            Ok(handle) => notification_handle = Some(handle),
-                            Err(e) => tracing::error!("Failed to show notification {}", e),
-                        }
-                        bell = Some(Event::Bell);
                     }
                 }
-            }
-            Err(e) => {
-                tracing::error!("can't deserialize event from notification: {:?}", e)
+                Err(e) => {
+                    tracing::error!("can't deserialize event from notification: {:?}", e)
+                }
             }
         }
     }

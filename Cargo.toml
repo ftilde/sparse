@@ -45,8 +45,9 @@ shellexpand = "2.1"
 uuid = "0.8.2" #Consider removing once reactions in matrix-sdk are fixed.
 
 [dependencies.matrix-sdk]
-git = "https://github.com/matrix-org/matrix-rust-sdk"
-rev = "5ab69f74004a2a8ed4fdd0669d8e8547c95d3377"
+version = "0.9"
+#git = "https://github.com/matrix-org/matrix-rust-sdk"
+#rev = "5ab69f74004a2a8ed4fdd0669d8e8547c95d3377"
 #git = "https://github.com/ftilde/matrix-rust-sdk"
 #branch = "sparse"
 #path = "../matrix-rust-sdk/crates/matrix-sdk"

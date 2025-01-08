@@ -1,5 +1,5 @@
 use crate::search::Filter;
-use matrix_sdk::deserialized_responses::SyncTimelineEvent;
+use matrix_sdk::deserialized_responses::{SyncTimelineEvent, TimelineEventKind};
 use matrix_sdk::ruma::api::Direction;
 use matrix_sdk::ruma::events::room::message::Relation;
 use matrix_sdk::ruma::events::room::redaction::OriginalSyncRoomRedactionEvent;
@@ -510,7 +510,7 @@ impl RoomTimelineCache {
         }
     }
 
-    pub fn next<'a>(&'a self, pos: RoomTimelineIndex) -> EventWalkResult {
+    pub fn next<'a>(&'a self, pos: RoomTimelineIndex) -> EventWalkResult<'a> {
         let new_pos = if let Some(ft) = &self.filtered_timeline {
             ft.filtered_messages.next(&pos.pos)
         } else {
@@ -526,7 +526,7 @@ impl RoomTimelineCache {
             }
         }
     }
-    pub fn previous<'a>(&'a self, pos: RoomTimelineIndex) -> EventWalkResult {
+    pub fn previous<'a>(&'a self, pos: RoomTimelineIndex) -> EventWalkResult<'a> {
         let new_pos = if let Some(ft) = &self.filtered_timeline {
             ft.filtered_messages.prev(&pos.pos)
         } else {
@@ -583,12 +583,30 @@ impl RoomTimelineCache {
 }
 
 fn transform_events(i: impl Iterator<Item = SyncTimelineEvent>) -> impl Iterator<Item = Event> {
-    i.filter_map(|msg| match msg.event.deserialize() {
-        Ok(e) => Some(e),
-        Err(e) => {
-            tracing::warn!("Failed to deserialize message {:?}", e);
-            None
+    i.filter_map(|msg| match msg.kind {
+        TimelineEventKind::Decrypted(decrypted_room_event) => {
+            match decrypted_room_event.event.deserialize() {
+                Ok(e) => Some(AnySyncTimelineEvent::MessageLike(e.into())),
+                Err(e) => {
+                    tracing::warn!("Failed to deserialize message {:?}", e);
+                    None
+                }
+            }
         }
+        TimelineEventKind::UnableToDecrypt { event, utd_info: _ } => match event.deserialize() {
+            Ok(e) => Some(e),
+            Err(e) => {
+                tracing::warn!("Failed to deserialize message {:?}", e);
+                None
+            }
+        },
+        TimelineEventKind::PlainText { event } => match event.deserialize() {
+            Ok(e) => Some(e),
+            Err(e) => {
+                tracing::warn!("Failed to deserialize message {:?}", e);
+                None
+            }
+        },
     })
 }
 

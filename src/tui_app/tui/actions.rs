@@ -924,7 +924,7 @@ async fn write_file(
         match c
             .media()
             .get_media_content(
-                &matrix_sdk::media::MediaRequest {
+                &matrix_sdk::media::MediaRequestParameters {
                     source: media_type,
                     format: matrix_sdk::media::MediaFormat::File,
                 },
