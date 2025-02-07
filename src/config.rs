@@ -1,4 +1,4 @@
-use matrix_sdk::OwnedServerName;
+use matrix_sdk::{ruma::OwnedUserId, OwnedServerName};
 use rlua::{Lua, RegistryKey, Value};
 use sequence_trie::SequenceTrie;
 use std::collections::HashMap;
@@ -72,7 +72,7 @@ impl ModeSet {
 
 const DEFAULT_OPEN_PROG: &str = "xdg-open";
 
-use unsegen::input::Key;
+use unsegen::{base::Color, input::Key};
 
 pub enum KeyMapFunctionResult<'a> {
     IsPrefix(Keys),
@@ -347,6 +347,7 @@ pub struct Config {
     pub url_open_program: String,
     pub keymaps: Arc<KeyMaps>,
     pub modes: Arc<ModeSet>,
+    pub username_colors: Arc<HashMap<OwnedUserId, Color>>,
 }
 
 impl Config {
@@ -381,6 +382,7 @@ pub struct ConfigBuilder {
     lua: Lua,
     host: Option<OwnedServerName>,
     user: Option<String>,
+    username_colors: HashMap<OwnedUserId, Color>,
     notification_style: NotificationStyle,
     file_open_program: String,
     url_open_program: String,
@@ -414,6 +416,7 @@ impl ConfigBuilder {
             file_open_program: DEFAULT_OPEN_PROG.to_owned(),
             url_open_program: DEFAULT_OPEN_PROG.to_owned(),
             modes: ModeSet::new(),
+            username_colors: Default::default(),
         }
     }
     pub fn finalize(self) -> Result<(Config, CommandEnvironment), String> {
@@ -429,6 +432,7 @@ impl ConfigBuilder {
                 url_open_program: self.url_open_program,
                 keymaps: Arc::new(KeyMaps(self.keymaps)),
                 modes: Arc::new(self.modes),
+                username_colors: Arc::new(self.username_colors),
             },
             CommandEnvironment::new(self.lua),
         ))
@@ -443,6 +447,7 @@ impl ConfigBuilder {
         //TODO maybe we can avoid these bindings with disjoint struct capturing in 2021 edition?
         let keymaps = std::cell::RefCell::new(&mut self.keymaps);
         let modes = std::cell::RefCell::new(&mut self.modes);
+        let username_colors = std::cell::RefCell::new(&mut self.username_colors);
         let host = &mut self.host;
         let user = &mut self.user;
         let notification_style = &mut self.notification_style;
@@ -567,6 +572,19 @@ impl ConfigBuilder {
                     "user",
                     scope.create_function_mut(|_lua_ctx, user_str: String| {
                         *user = Some(user_str);
+                        Ok(())
+                    })?,
+                )?;
+
+                globals.set(
+                    "user_color_ansi",
+                    scope.create_function_mut(|_lua_ctx, (name, color): (String, u8)| {
+                        let mut username_colors = username_colors.borrow_mut();
+                        let color = Color::Ansi(color);
+                        let name = OwnedUserId::from_str(&name).map_err(|e| {
+                            rlua::Error::RuntimeError(format!("Failed to parse user name: {}", e))
+                        })?;
+                        username_colors.insert(name.into(), color);
                         Ok(())
                     })?,
                 )?;

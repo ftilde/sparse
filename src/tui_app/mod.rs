@@ -15,7 +15,10 @@ use matrix_sdk::{
     Client, LoopCtrl,
 };
 
-use crate::timeline::{self};
+use crate::{
+    config::Config,
+    timeline::{self},
+};
 
 use nix::sys::signal::{SigSet, Signal};
 use std::collections::BTreeMap;
@@ -28,7 +31,7 @@ pub mod tui;
 
 type UserColors = BTreeMap<OwnedUserId, Color>;
 
-async fn calculate_user_colors(room: &Room) -> UserColors {
+async fn calculate_user_colors(room: &Room, config: &Config) -> UserColors {
     let available_colors = [
         Color::Red,
         Color::Blue,
@@ -46,18 +49,30 @@ async fn calculate_user_colors(room: &Room) -> UserColors {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut raw_colors = users
+    let mut user_colors = UserColors::new();
+    user_colors.insert(own_user_id.into(), own_color);
+
+    let remaining_users = users
         .into_iter()
         .filter(|i| i != own_user_id)
+        .filter(|id| {
+            if let Some(c) = config.username_colors.get(id) {
+                user_colors.insert(id.clone(), *c);
+                false
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut raw_colors = remaining_users
+        .into_iter()
         .map(|i| {
             let mut hasher = DefaultHasher::new();
             i.as_str().hash(&mut hasher);
             (i.into(), hasher.finish() as usize % num_colors)
         })
         .peekable();
-
-    let mut user_colors = UserColors::new();
-    user_colors.insert(own_user_id.into(), own_color);
 
     let mut table = vec![None; num_colors];
     'outer: while let Some((_id, pos)) = raw_colors.peek() {
@@ -98,7 +113,7 @@ pub struct RoomState {
 }
 
 impl RoomState {
-    async fn from_room(room: &Room) -> Self {
+    async fn from_room(room: &Room, config: &Config) -> Self {
         let name = room.compute_display_name().await.unwrap().to_string();
         let latest_read_message = room
             .load_user_receipt(
@@ -117,7 +132,7 @@ impl RoomState {
             latest_read_message,
             num_unread_notifications: room.unread_notification_counts().notification_count,
             last_notification_handle: None,
-            user_colors: calculate_user_colors(room).await,
+            user_colors: calculate_user_colors(room, config).await,
             tui: tui::RoomTuiState::at_last_message(),
         }
     }
@@ -173,13 +188,15 @@ impl State {
             user_id,
         }
     }
-    async fn update_room_info(&mut self, room: &Room) {
+    async fn update_room_info(&mut self, room: &Room, config: &Config) {
         if let Some(r) = self.rooms.get_mut(room.room_id()) {
             r.name = room.compute_display_name().await.unwrap().to_string();
-            r.user_colors = calculate_user_colors(room).await;
+            r.user_colors = calculate_user_colors(room, config).await;
         } else {
-            self.rooms
-                .insert(room.room_id().to_owned(), RoomState::from_room(room).await);
+            self.rooms.insert(
+                room.room_id().to_owned(),
+                RoomState::from_room(room, config).await,
+            );
         }
     }
     fn current_room_state(&self) -> Option<&RoomState> {
@@ -333,7 +350,7 @@ async fn run_matrix_event_loop(c: Connection) {
                     let room = match state.rooms.entry(room_id.clone()) {
                         std::collections::btree_map::Entry::Vacant(entry) => {
                             let room = c.client.get_room(&room_id).unwrap();
-                            entry.insert(RoomState::from_room(&room).await)
+                            entry.insert(RoomState::from_room(&room, &c.config).await)
                         }
                         std::collections::btree_map::Entry::Occupied(r) => r.into_mut(),
                     };
@@ -349,7 +366,7 @@ async fn run_matrix_event_loop(c: Connection) {
                                 | AnySyncStateEvent::RoomName(_)
                                 | AnySyncStateEvent::RoomCanonicalAlias(_),
                             ) => {
-                                state.update_room_info(&room).await;
+                                state.update_room_info(&room, &c.config).await;
                             }
                             Ok(_) => {}
                             Err(e) => {
@@ -478,7 +495,7 @@ pub async fn run(
     for room in client.joined_rooms() {
         let id = room.room_id();
         if let Some(room) = client.get_room(id) {
-            rooms.insert(id.to_owned(), RoomState::from_room(&room).await);
+            rooms.insert(id.to_owned(), RoomState::from_room(&room, &config).await);
         }
     }
     let user_id = client.user_id().unwrap();
