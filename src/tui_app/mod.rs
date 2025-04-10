@@ -287,17 +287,23 @@ async fn handle_notification(c: &Connection, room: &Room, notification: Notifica
     }
     {
         let mut state = c.state.lock().await;
-        let m = &mut state.rooms.get_mut(room.room_id()).unwrap();
-        m.num_unread_notifications = room.unread_notification_counts().notification_count;
-        if let Some(handle) = notification_handle {
-            m.last_notification_handle
-                .replace(handle)
-                .map(|old_handle| old_handle.close());
-        }
-        if let Some(bell) = bell {
-            c.events.lock().await.send(bell).await.unwrap();
+        if let Some(m) = &mut state.rooms.get_mut(room.room_id()) {
+            m.num_unread_notifications = room.unread_notification_counts().notification_count;
+            if let Some(handle) = notification_handle {
+                m.last_notification_handle
+                    .replace(handle)
+                    .map(|old_handle| old_handle.close());
+            }
+            if let Some(bell) = bell {
+                c.events.lock().await.send(bell).await.unwrap();
+            } else {
+                c.update().await;
+            }
         } else {
-            c.update().await;
+            tracing::warn!(
+                "Cannot handle notification for room {}, unknown room",
+                room.room_id(),
+            );
         }
     }
 }
