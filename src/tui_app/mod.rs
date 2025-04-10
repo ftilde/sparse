@@ -321,13 +321,6 @@ async fn run_matrix_event_loop(c: Connection) {
         let settings = SyncSettings::default();
         let res = client
             .sync_with_callback(settings, |response| async move {
-                for (room_id, notifications) in response.notifications {
-                    if let Some(room) = c.client.get_room(&room_id) {
-                        for notification in notifications {
-                            handle_notification(c, &room, notification).await;
-                        }
-                    }
-                }
                 for e in response.to_device {
                     match e.deserialize() {
                         Ok(AnyToDeviceEvent::RoomKey(e)) => {
@@ -372,6 +365,13 @@ async fn run_matrix_event_loop(c: Connection) {
                             Err(e) => {
                                 tracing::warn!("Failed to deserialize state event {}", e)
                             }
+                        }
+                    }
+                }
+                for (room_id, notifications) in response.notifications {
+                    if let Some(room) = c.client.get_room(&room_id) {
+                        for notification in notifications {
+                            handle_notification(c, &room, notification).await;
                         }
                     }
                 }
