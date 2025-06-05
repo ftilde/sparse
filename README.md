@@ -29,4 +29,4 @@ As such I currently don't plan on adding functionality, but will maintain the so
 
 ## License
 
-`ugdb` is released under the MIT license.
+`sparse` is released under the MIT license.
